@@ -12,6 +12,7 @@ use std::{
 pub struct Store {
     pub(crate) db: Connection,
     _lock: Option<File>,
+    cloud: Option<std::sync::Mutex<crate::cloud::Mirror>>,
 }
 
 impl Store {
@@ -34,12 +35,47 @@ impl Store {
         let mut store = Self {
             db,
             _lock: Some(lock),
+            cloud: None,
         };
         store.init()?;
         crate::history::init(&store.db)?;
         store.clear_legacy_features()?;
         store.purge_expired()?;
         Ok(store)
+    }
+
+    pub fn memory() -> Result<Self> {
+        let mut store = Self {
+            db: Connection::open_in_memory()?,
+            _lock: None,
+            cloud: None,
+        };
+        store.init()?;
+        crate::history::init(&store.db)?;
+        Ok(store)
+    }
+
+    pub fn attach_cloud(
+        &mut self,
+        aws: std::sync::Arc<crate::cloud::Aws>,
+        account: &str,
+        lease: Option<std::sync::Arc<crate::cloud::Lease>>,
+    ) -> Result<()> {
+        self.cloud = Some(std::sync::Mutex::new(crate::cloud::Mirror::load(
+            aws, account, lease, &self.db,
+        )?));
+        self.purge_expired()?;
+        Ok(())
+    }
+
+    pub fn flush(&self) -> Result<()> {
+        if let Some(mirror) = &self.cloud {
+            mirror
+                .lock()
+                .map_err(|_| message("Cloud state is unavailable."))?
+                .flush(&self.db)?;
+        }
+        Ok(())
     }
 
     fn init(&mut self) -> Result<()> {
@@ -98,7 +134,7 @@ impl Store {
             return Err(message("Local snapshot exceeds the 50 MB safety limit."));
         }
         self.db.execute("INSERT INTO records VALUES(?,?,?,?) ON CONFLICT(account,kind) DO UPDATE SET payload=excluded.payload,updated=excluded.updated", params![account,kind,raw,now()])?;
-        Ok(())
+        self.flush()
     }
 
     pub fn promote<T: Serialize>(&mut self, account: &str, snapshot: &T) -> Result<()> {
@@ -113,7 +149,7 @@ impl Store {
             [account],
         )?;
         tx.commit()?;
-        Ok(())
+        self.flush()
     }
 
     pub fn remove(&mut self, account: &str, kind: &str) -> Result<()> {
@@ -121,7 +157,7 @@ impl Store {
             "DELETE FROM records WHERE account=? AND kind=?",
             params![account, kind],
         )?;
-        Ok(())
+        self.flush()
     }
     pub fn disconnect(&mut self, account: &str) -> Result<()> {
         let tx = self.db.transaction()?;
@@ -132,7 +168,7 @@ impl Store {
         tx.execute("DELETE FROM event_daily WHERE account=?", [account])?;
         tx.execute("DELETE FROM audit_users WHERE account=?", [account])?;
         tx.commit()?;
-        Ok(())
+        self.flush()
     }
     pub fn tags(
         &self,
@@ -161,7 +197,7 @@ impl Store {
             return Ok(());
         }
         self.db.execute("INSERT INTO tag_cache VALUES(?,?,?,?) ON CONFLICT(account,identity) DO UPDATE SET payload=excluded.payload,expires=excluded.expires",params![account,key,serde_json::to_string(value)?,value.expires_at])?;
-        Ok(())
+        self.flush()
     }
     pub fn purge_expired(&mut self) -> Result<()> {
         self.db.execute(
@@ -178,7 +214,7 @@ impl Store {
         )?;
         self.db
             .execute("DELETE FROM tag_cache WHERE expires<=?", [now()])?;
-        Ok(())
+        self.flush()
     }
 }
 

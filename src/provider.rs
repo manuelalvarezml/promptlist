@@ -93,6 +93,7 @@ pub struct TokenReply {
     scope: Option<String>,
 }
 
+#[derive(Clone, serde::Serialize, Deserialize)]
 pub struct Tokens {
     access: String,
     refresh: String,
@@ -100,6 +101,9 @@ pub struct Tokens {
 }
 
 impl Tokens {
+    pub fn is_fresh(&self) -> bool {
+        self.expires_at > now() + 60
+    }
     fn from_reply(reply: TokenReply, previous: Option<&str>) -> Result<Self> {
         if reply.access_token.is_empty() {
             return Err(message("Spotify did not return an access token."));
@@ -148,7 +152,7 @@ pub async fn exchange(
     Tokens::from_reply(serde_json::from_value(body)?, None)
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, serde::Serialize)]
 pub struct Profile {
     pub id: String,
     #[serde(default)]
@@ -173,6 +177,9 @@ pub struct Spotify {
 }
 
 impl Spotify {
+    pub async fn saved_tokens(&self) -> Tokens {
+        self.token.lock().await.clone()
+    }
     pub fn new(
         http: Client,
         client_id: String,

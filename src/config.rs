@@ -5,11 +5,14 @@ use std::{
 };
 use url::Url;
 
+pub const DEFAULT_MODEL: &str = "gpt-6.1-sol";
+
 pub struct Config {
     pub client_id: String,
     pub redirect: Url,
     pub lastfm_key: Option<String>,
     pub openai_key: Option<String>,
+    pub openai_model: String,
     pub data_dir: PathBuf,
     pub allowed_users: Vec<String>,
     listen_port: u16,
@@ -33,6 +36,7 @@ impl Config {
             "SPOTIFY_REDIRECT_URI",
             "LASTFM_API_KEY",
             "OPENAI_API_KEY",
+            "OPENAI_MODEL",
             "PROMPTLIST_MODE",
             "PROMPTLIST_PORT",
             "PROMPTLIST_DATA_DIR",
@@ -127,6 +131,11 @@ impl Config {
             redirect,
             lastfm_key,
             openai_key,
+            openai_model: values
+                .get("OPENAI_MODEL")
+                .filter(|s| !s.trim().is_empty())
+                .cloned()
+                .unwrap_or_else(|| DEFAULT_MODEL.into()),
             data_dir,
             allowed_users,
             listen_port,

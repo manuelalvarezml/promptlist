@@ -1,0 +1,534 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Isolated Promptlist private beta. Pay-per-use Rust runtime, private state, bounded workers.",
+  "Parameters": {
+    "ReleaseBucket": {
+      "Type": "String"
+    },
+    "ReleaseKey": {
+      "Type": "String"
+    },
+    "SpotifyClientId": {
+      "Type": "String",
+      "NoEcho": true
+    },
+    "OpenAIKey": {
+      "Type": "String",
+      "NoEcho": true
+    },
+    "LastfmKey": {
+      "Type": "String",
+      "NoEcho": true
+    },
+    "AllowedUsers": {
+      "Type": "String",
+      "NoEcho": true
+    },
+    "Callback": {
+      "Type": "String",
+      "Default": "https://pending.invalid/callback"
+    }
+  },
+  "Resources": {
+    "State": {
+      "Type": "AWS::DynamoDB::Table",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "pk",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "sk",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "pk",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "sk",
+            "KeyType": "RANGE"
+          }
+        ],
+        "TimeToLiveSpecification": {
+          "AttributeName": "expires",
+          "Enabled": true
+        },
+        "StreamSpecification": {
+          "StreamViewType": "NEW_IMAGE"
+        },
+        "SSESpecification": {
+          "SSEEnabled": true
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "promptlist"
+          }
+        ]
+      }
+    },
+    "Data": {
+      "Type": "AWS::S3::Bucket",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "IgnorePublicAcls": true,
+          "BlockPublicPolicy": true,
+          "RestrictPublicBuckets": true
+        },
+        "OwnershipControls": {
+          "Rules": [
+            {
+              "ObjectOwnership": "BucketOwnerEnforced"
+            }
+          ]
+        },
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "Id": "expire-transient-projections",
+              "Status": "Enabled",
+              "Prefix": "temporary/",
+              "ExpirationInDays": 2,
+              "AbortIncompleteMultipartUpload": {
+                "DaysAfterInitiation": 1
+              }
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "promptlist"
+          }
+        ]
+      }
+    },
+    "PrivateTransport": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "Data"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:*",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "Data",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Sub": "${Data.Arn}/*"
+                }
+              ],
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "Failures": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "SqsManagedSseEnabled": true,
+        "MessageRetentionPeriod": 1209600,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "promptlist"
+          }
+        ]
+      }
+    },
+    "Role": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "PromptlistPrivateState",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:GetItem",
+                    "dynamodb:PutItem",
+                    "dynamodb:UpdateItem",
+                    "dynamodb:DeleteItem",
+                    "dynamodb:Query",
+                    "dynamodb:ConditionCheckItem"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "State",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:DescribeStream",
+                    "dynamodb:GetRecords",
+                    "dynamodb:GetShardIterator"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "State",
+                      "StreamArn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:ListStreams"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:PutObject",
+                    "s3:DeleteObject"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "${Data.Arn}/*"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "s3:ListBucket",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "Data",
+                      "Arn"
+                    ]
+                  },
+                  "Condition": {
+                    "StringLike": {
+                      "s3:prefix": [
+                        "account/*",
+                        "temporary/account/*"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "sqs:SendMessage",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "Failures",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/promptlist-*:*"
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "promptlist"
+          }
+        ]
+      }
+    },
+    "ApiLog": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": "/aws/lambda/promptlist-api",
+        "RetentionInDays": 3
+      }
+    },
+    "WorkerLog": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": "/aws/lambda/promptlist-worker",
+        "RetentionInDays": 3
+      }
+    },
+    "Api": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": "ApiLog",
+      "Properties": {
+        "FunctionName": "promptlist-api",
+        "Runtime": "provided.al2023",
+        "Handler": "bootstrap",
+        "Architectures": [
+          "x86_64"
+        ],
+        "MemorySize": 256,
+        "Timeout": 30,
+        "ReservedConcurrentExecutions": 6,
+        "Role": {
+          "Fn::GetAtt": [
+            "Role",
+            "Arn"
+          ]
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "ReleaseBucket"
+          },
+          "S3Key": {
+            "Ref": "ReleaseKey"
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "PROMPTLIST_MODE": "hosted",
+            "PROMPTLIST_TABLE": {
+              "Ref": "State"
+            },
+            "PROMPTLIST_BUCKET": {
+              "Ref": "Data"
+            },
+            "SPOTIFY_CLIENT_ID": {
+              "Ref": "SpotifyClientId"
+            },
+            "SPOTIFY_REDIRECT_URI": {
+              "Ref": "Callback"
+            },
+            "OPENAI_API_KEY": {
+              "Ref": "OpenAIKey"
+            },
+            "OPENAI_MODEL": "gpt-6.1-sol",
+            "LASTFM_API_KEY": {
+              "Ref": "LastfmKey"
+            },
+            "PROMPTLIST_ALLOWED_USERS": {
+              "Ref": "AllowedUsers"
+            }
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "promptlist"
+          }
+        ]
+      }
+    },
+    "Worker": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": "WorkerLog",
+      "Properties": {
+        "FunctionName": "promptlist-worker",
+        "Runtime": "provided.al2023",
+        "Handler": "bootstrap",
+        "Architectures": [
+          "x86_64"
+        ],
+        "MemorySize": 512,
+        "Timeout": 600,
+        "ReservedConcurrentExecutions": 1,
+        "Role": {
+          "Fn::GetAtt": [
+            "Role",
+            "Arn"
+          ]
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "ReleaseBucket"
+          },
+          "S3Key": {
+            "Ref": "ReleaseKey"
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "PROMPTLIST_MODE": "hosted",
+            "PROMPTLIST_TABLE": {
+              "Ref": "State"
+            },
+            "PROMPTLIST_BUCKET": {
+              "Ref": "Data"
+            },
+            "SPOTIFY_CLIENT_ID": {
+              "Ref": "SpotifyClientId"
+            },
+            "SPOTIFY_REDIRECT_URI": {
+              "Ref": "Callback"
+            },
+            "OPENAI_API_KEY": {
+              "Ref": "OpenAIKey"
+            },
+            "OPENAI_MODEL": "gpt-6.1-sol",
+            "LASTFM_API_KEY": {
+              "Ref": "LastfmKey"
+            },
+            "PROMPTLIST_ALLOWED_USERS": {
+              "Ref": "AllowedUsers"
+            }
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "promptlist"
+          }
+        ]
+      }
+    },
+    "Dispatch": {
+      "Type": "AWS::Lambda::EventSourceMapping",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "Worker"
+        },
+        "EventSourceArn": {
+          "Fn::GetAtt": [
+            "State",
+            "StreamArn"
+          ]
+        },
+        "StartingPosition": "LATEST",
+        "BatchSize": 1,
+        "MaximumRetryAttempts": 3,
+        "MaximumRecordAgeInSeconds": 3600,
+        "ParallelizationFactor": 1,
+        "FilterCriteria": {
+          "Filters": [
+            {
+              "Pattern": "{\"eventName\":[\"INSERT\",\"MODIFY\"],\"dynamodb\":{\"NewImage\":{\"sk\":{\"S\":[\"job\"]},\"status\":{\"S\":[\"queued\"]}}}}"
+            }
+          ]
+        },
+        "DestinationConfig": {
+          "OnFailure": {
+            "Destination": {
+              "Fn::GetAtt": [
+                "Failures",
+                "Arn"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "Url": {
+      "Type": "AWS::Lambda::Url",
+      "Properties": {
+        "TargetFunctionArn": {
+          "Ref": "Api"
+        },
+        "AuthType": "NONE",
+        "InvokeMode": "BUFFERED"
+      }
+    },
+    "UrlPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "Api"
+        },
+        "Action": "lambda:InvokeFunctionUrl",
+        "Principal": "*",
+        "FunctionUrlAuthType": "NONE"
+      }
+    },
+    "InvokePermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "Api"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "*",
+        "InvokedViaFunctionUrl": true
+      }
+    }
+  },
+  "Outputs": {
+    "Url": {
+      "Value": {
+        "Fn::GetAtt": [
+          "Url",
+          "FunctionUrl"
+        ]
+      }
+    },
+    "StateTable": {
+      "Value": {
+        "Ref": "State"
+      }
+    },
+    "DataBucket": {
+      "Value": {
+        "Ref": "Data"
+      }
+    },
+    "ApiName": {
+      "Value": {
+        "Ref": "Api"
+      }
+    },
+    "WorkerName": {
+      "Value": {
+        "Ref": "Worker"
+      }
+    },
+    "FailureQueue": {
+      "Value": {
+        "Ref": "Failures"
+      }
+    }
+  }
+}

@@ -1,213 +1,146 @@
-# Hosted Private Beta
+# Serverless Private Beta
 
-Status: serverless migration selected on 2026-10-28; not implemented or live.
-The owner selected **under US$3/month in AWS charges**, excluding provider API
-usage, and an AWS-provided HTTPS address until a domain is purchased. This
-supersedes the Lightsail recommendation below. No existing AWS website,
-credentials or data store is a runtime dependency.
+Implemented and provisioned October 28, 2026. Live acceptance and exact resource
+identities belong in private operational checkpoints, never public fixtures.
+Spotify hosted OAuth and genuine Premium playback require separate acceptance;
+an HTTP health response is not proof of either.
 
-## Selected Serverless Direction
+## Architecture
 
-- Rust Lambda HTTP function with a stable AWS Function URL for the application,
-  OAuth callback and assets. No purchased domain, certificate renewal, API
-  Gateway, always-on instance or provisioned concurrency required initially.
-- Separate invoked Rust worker for sync/build/coverage, with durable queued job
-  state, progress, bounded retries and an account-level lease. A submitted job
-  must survive process termination; do not rely on `tokio::spawn` after an HTTP
-  response. Choose and test a durable dispatch/outbox mechanism before release.
-- DynamoDB on-demand for small session/job records, history indexes and bounded
-  event batches. Use conditional writes for ownership, deletion generations,
-  deduplication and ambiguous-export receipts. Do not fit entire libraries or
-  unlimited prompt results into one item. Persist server-only credentials
-  encrypted, with least-privilege IAM and expiry enforced on every read.
-- Private S3 for compressed library snapshots, larger prompt/result documents
-  and analytical archives. Use account-scoped opaque keys and immutable objects
-  with conditional pointer updates. Do not copy/upload the SQLite file after
-  every request or share writable `/tmp` state between Lambda instances.
-- Keep functions outside a customer VPC: no NAT gateway, EFS, RDS, load balancer,
-  container registry or separate analytics service. Package compiled Rust as a
-  zip; benchmark memory and architecture before selecting their final settings.
-- Cache public versioned assets in the browser; all account pages, OAuth,
-  playback tokens and APIs remain private/no-store. CloudFront is optional only
-  if its verified cost/abuse protection improves the simple Function URL design.
+- Rust HTTP Lambda, 256 MB, 30-second timeout, reserved concurrency 6, AWS HTTPS
+  Function URL. No purchased domain, proxy server or certificate management.
+- Rust worker, 512 MB, 600-second timeout, reserved concurrency 1. DynamoDB
+  Streams dispatch queued jobs durably. Batch size 1, three delivery retries,
+  one-hour maximum stream record age and a private encrypted failure queue.
+- Private on-demand DynamoDB stores sessions, job progress and logical account
+  rows. Values over 120 KB are compressed into immutable private S3 objects;
+  fenced transactions change their pointers before old objects are removed.
+- SQLite is an in-memory projection during each cloud invocation, not shared
+  writable disk. Only changed rows persist. The ordinary local runtime remains.
+- Conditional account leases, job IDs and account-deletion generations prevent
+  concurrent writes and duplicate export replay. The worker stays within its
+  invocation while background matching runs, flushing progress/session state.
+- Private SSE-S3 bucket, TLS-only access, Block Public Access, scoped IAM.
+  Hosted session tokens are private/encrypted, expire after 24 hours and never
+  enter analytics. Cookies are Secure/HttpOnly, responses private/no-store.
+- No VPC/NAT, EFS, RDS, load balancer, API Gateway, ECR, fixed-price host,
+  provisioned concurrency or external analytics service.
 
-The current application still uses SQLite and in-memory sessions/workers.
-The existing Dockerfile/systemd files are historical server preparation, not a
-Lambda implementation. Do not deploy the current server unchanged on Lambda.
+## History And Behavior
 
-## Budget And Guardrails
+Prompt/refinement text, interpretations, original/latest result selections and
+outcomes persist per account until deletion. Raw app events expire after 90 days;
+daily action-kind/outcome/count/timing summaries last 365 UTC days. Large records
+use S3 only when useful; normal analytics writes share the existing request.
+No invocation per click, keystroke capture or separate analytics SaaS.
 
-Under $3 is a **light-use target, not a guaranteed AWS billing cap**. Model the
-incremental cost without assuming unused account-wide free allowances or trial
-credits; include requests, compute, storage, logs, transfer and retries.
+Navigation, submissions, jobs, edits, exports and playback starts are recorded.
+SDK pause/seek/volume interactions are not yet instrumented. No library or activity
+data goes to OpenAI. Private developer exports are pseudonymous, not anonymous.
 
-Illustration using AWS's published x86 Lambda rate of $0.0000166667/GB-second:
-500 builds at 512 MiB and 60 billed seconds cost about **$0.25 in worker compute**;
-500 at five minutes cost about **$1.25**. These are not whole-app estimates or
-measured Promptlist runtimes. Sync, coverage, HTTP/status requests, cold starts,
-storage and other charges are additional. Verify the chosen region's rates and
-measure actual jobs before assigning a monthly allowance.
+Expiry is enforced on hydration, independent of eventual DynamoDB TTL cleanup.
+Transient S3 objects expire after two days. Confirmed account deletion removes
+active/expired rows, orphaned objects and linked sessions. Local source databases
+and separately created developer exports are independent copies: delete those
+separately when satisfying a full erasure request.
 
-Required before public release: explicit account allowlist, small concurrency
-limits, per-account/month work admission using worst-case billed duration,
-timeouts, bounded provider retries, status polling backoff, short redacted-log
-retention and storage/object limits. Reject new expensive work before exhausting
-the allowance while preserving history reads and existing receipts. Reserve
-headroom for anonymous traffic and deletion. Billing alerts are delayed and are
-not a hard spending stop; never promise protection against all public abuse.
+## Model
 
-## History And Behavior Data
+Default `gpt-6.1-sol`, medium reasoning, 4,000 output tokens, 45-second timeout.
+Only requests and prompt-derived preferences are sent. Deterministic local
+requests avoid inference; provider failure falls back to local matching.
+Two bounded synthetic prompt/refinement calls took about 4.8/3.5 seconds and
+cost approximately $0.00195/$0.00233 at the documented $2/M input, $10/M output
+rates. These are examples, not a quality or production latency guarantee.
+[Official model](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
+[pricing](https://developers.openai.com/api/docs/pricing).
 
-Current local implementation stores submitted prompts/refinements, structured
-interpretations, original/latest playlist results, outcomes and elapsed times per
-account until deletion. Detailed actions expire after 90 days. Daily action-kind
-counts, outcome counts and timing sums survive for 365 UTC days; no prompt text
-is duplicated in these aggregates. Migration backfills existing actions once.
-Account deletion removes both raw actions and aggregates. The private audit
-export is schema version 2 and includes the summaries.
+## Cost Controls
 
-Tracked actions include navigation, submissions, jobs, edits, exports and play
-starts. This is not a complete playback telemetry stream: SDK pause, seek and
-volume interactions are not currently instrumented. No keystrokes, passwords,
-OAuth credentials or raw provider bodies enter analytics; no behavior/library
-data goes to an AI model or third-party analytics service.
+Under $3/month is a light-use target, **not a billing guarantee or hard cap**.
+Global admission allows at most 200 expensive jobs per UTC month, including
+sync/coverage/build/refinement/export. At the maximum 600 billed seconds and
+512 MB, 200 worker invocations cost about $1 of x86 compute before free tier.
+HTTP, failed/redelivered invocations, storage, requests, logs and transfer add
+cost. Anonymous new sessions are limited to 100/day; this does not eliminate
+cost from public traffic. Logs retain three days; release artifacts 30 days.
 
-For serverless, retain the same account-scoped contract. Persist bounded event
-batches as part of existing requests, not a separate Lambda invocation per
-click. Flush before completing an invocation, not on a background timer.
-Deduplicate batches and job outcomes so retries cannot inflate daily counts.
-Use DynamoDB for active records/indexes and compact private S3 batches for
-longer retention; benchmark batching rather than assuming fewer HTTP calls mean
-fewer billed DynamoDB write units. Prefer S3 Standard at beta scale; tiny-object
-archive transitions can cost more than they save.
-
-Cloud objects must use Block Public Access, bucket-owner enforcement, TLS-only
-access, SSE-S3 and project-specific least-privilege roles. Enforce expiry in reads
-and exports because DynamoDB TTL/S3 lifecycle deletion is asynchronous. Account
-deletion must invalidate workers and purge indexes, objects, versions and queued
-events, with tombstones preventing restoration from old recovery backups.
-Validate this before enabling any cloud archive. Pseudonymous exports are still
-personal data, not public fixtures. **No cloud analytics or backup exists yet.**
-
-## Migration Acceptance
-
-1. Separate HTTP/session/job persistence from the existing matching code, keeping
-   the local runtime working. Move auth state and refresh coordination out of
-   process memory without exposing tokens to logs or browser storage.
-2. Implement durable jobs, idempotent action history and account deletion; test
-   cold starts, concurrent sessions, worker termination, duplicate delivery,
-   lost responses and ambiguous Spotify writes. Never replay a playlist export
-   just because a worker retried.
-3. Package/test Linux Rust functions and isolated infrastructure with measured
-   memory/time/storage, a cost model and least-privilege policies. Verify the
-   intended AWS identity immediately before provisioning; never use default.
-4. Register the generated HTTPS callback while preserving localhost. Reconnect
-   the owner account, validate private state restoration, build/refine/playback
-   and explicit export, then record actual cost and rollback evidence.
-
-Sources checked 2026-10-28:
-[Function URL/HTTPS](https://docs.aws.amazon.com/lambda/latest/dg/urls-configuration.html),
-[Lambda lifecycle](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtime-environment.html),
+For a few users and short jobs, these controls leave headroom below $3 without
+assuming free credits. Large histories, slow jobs or abusive traffic can exceed
+it. No paid monitoring subscription or billing alert is configured. Inspect
+actual billing and workload before inviting more users or raising limits.
 [Lambda pricing](https://aws.amazon.com/lambda/pricing/),
 [DynamoDB pricing](https://aws.amazon.com/dynamodb/pricing/),
-[TTL delay](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TTL.html),
-[S3 pricing](https://aws.amazon.com/s3/pricing/),
-[SSE-S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/default-encryption-faq.html).
+[S3 pricing](https://aws.amazon.com/s3/pricing/).
 
-## Historical Server Alternative (Not Selected)
+## Operator Workflow
 
-One Lightsail Linux `nano_3_0` instance in us-east-2: 512 MB RAM, 20 GB disk,
-public IPv4 and 1 TB transfer for **US$5/month**, before tax and overages.
-Use Ubuntu 24.04 LTS, one non-root Rust process, SQLite on persistent disk,
-systemd supervision, and Nginx for TLS and request limits. No load balancer,
-NAT gateway, managed database, container registry or paid CDN is needed.
-
-Verified against the AWS bundle API and [AWS bundle table](https://docs.aws.amazon.com/lightsail/latest/userguide/amazon-lightsail-bundles.html)
-on 2026-10-28. IPv6-only is $3.50, but provider reachability and client support
-must be proven before choosing it. Public AAAA DNS records were found for all
-five current API providers on 2026-10-28; this is not an actual egress test.
-[CloudFront supports IPv6 origins](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cloudfront-enable-ipv6.html),
-so it can preserve IPv4 viewer access, subject to an origin hostname, trusted
-origin TLS and verified Free-plan eligibility. Do not assume a trial/free credit.
-Backups, monitoring upgrades, excess traffic, domains and provider API usage
-are separate costs. The base price is not a hard total-bill ceiling.
-
-For a user-owned domain, use automated public TLS. Without a domain, a stable
-public IP can have a trusted short-lived certificate: [Certbot/Let's Encrypt
-IP certificate instructions](https://letsencrypt.org/2026/03/11/shorter-certs-certbot).
-Certbot >=5.4 supports webroot IP validation. Renew automatically and reload the
-proxy after renewal; these certificates last six days. Do not serve OAuth over
-plain HTTP or tell users to bypass certificate warnings.
-
-Serverless can have a lower idle bill, but is not a drop-in packaging change:
-current sessions/tokens and background workers are in memory, while SQLite is
-writable local state. A Lambda design needs durable encrypted auth state,
-asynchronous jobs, account serialization and durable writes. A single Lambda
-container with `/tmp` SQLite would lose state and freeze jobs after responses.
-
-## Configuration
-
-The application accepts named environment variables, overriding `.env.local`.
-Use a root-owned mode-0600 systemd environment file outside the release tree:
-
-```dotenv
-SPOTIFY_CLIENT_ID=your_client_id
-SPOTIFY_REDIRECT_URI=https://your-host/callback
-LASTFM_API_KEY=your_key
-OPENAI_API_KEY=your_key
-PROMPTLIST_ALLOWED_USERS=your_spotify_account_id
-```
-
-`promptlist.service` sets hosted mode, the internal loopback port, and private
-data directory. HTTPS is mandatory in hosted mode, along with a nonempty account
-allowlist. Cookies become Secure and HSTS is enabled. Host and Origin checks
-use the configured public origin; forwarded headers cannot override it. Configure
-the reverse proxy to preserve the exact public Host. Never publish port 8787.
-
-Add the exact HTTPS callback to the Spotify developer app, preserving the local
-callback. Retain Web API and Web Playback SDK. The app remains subject to
-[Spotify Development Mode limits](https://developer.spotify.com/documentation/web-api/concepts/quota-modes),
-including the user allowlist; a public URL is not approval for general signup.
-
-## Build And Release
+Requires Rust 1.89+, Docker, AWS CLI, Node with `util.parseEnv`, zip and sqlite3.
+Use only CLI profile `manueldev`, verified as IAM `manuel-web`, region us-east-2.
+Never use default/Reevalua. Create an ignored mode-0600 `.deploy/operator.json`
+containing the expected `account` and full `arn`, confirmed with STS. Release
+scripts refuse a different identity. `.env.local` supplies only this project's
+keys. The local database supplies the bounded owner allowlist.
 
 ```sh
-docker build --platform linux/amd64 -f deploy/Dockerfile --target artifact \
-  --output type=local,dest=.deploy/release .
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings
+cargo test --locked
+docker build --platform linux/amd64 -f deploy/Dockerfile.lambda \
+  --target artifact --output type=local,dest=.deploy/lambda .
+node deploy/release.cjs deploy
+node deploy/release.cjs configure
+node deploy/run-cloud.cjs --container cloud-smoke
+node deploy/run-cloud.cjs --container cloud-smoke --model
+node deploy/run-cloud.cjs --container cloud-import .data/catalog.sqlite
+node deploy/release.cjs finalize
 ```
 
-The Docker context is allowlisted and excludes local secrets, SQLite, Git,
-operational documents and licensed theme binaries. The output is a Linux binary,
-not a cloud deployment. Build away from the 512 MB production server.
+`deploy/configure` temporarily allow the synthetic test account; `finalize`
+removes it. Always finalize after acceptance. No public endpoint can sign in
+as that fixture account. Linux operator containers avoid host-specific native
+network issues and mount the source database read-only. Native Rust operator
+commands are supported without `--container` where networking works.
 
-Install versioned releases under `/opt/promptlist/releases/` and point
-`/opt/promptlist/current` at the selected release. Install optional authorized
-theme assets into each release's `assets/` directory separately. Run under the
-dedicated `promptlist` OS user using the supplied hardened service unit.
-Data belongs at `/var/lib/promptlist`, outside every release. Do not upload the
-entire local project folder or automatically overwrite an existing cloud database.
+Deploy creates only dedicated Promptlist resources and records stable identities
+in ignored `.deploy/aws-release.json`. Secret-bearing CloudFormation inputs use
+0600 temporary files which are removed; parameters are NoEcho. Keys/tokens/data
+never belong in GitHub or command arguments. Licensed theme binaries are added
+only to the private release zip, not redistributed in the repository.
 
-Only 80/443 should be public. Limit SSH to the operator's IP and verify host keys.
-Keep access logs off or explicitly redact callback query strings, cookies and
-authorization headers. Add proxy request/body/connection limits; maintain the
-application's Origin/CSRF/preview/write protections. Disable password SSH and
-enable unattended security updates. Keep cloud credentials off the host.
+Cloud import uses SQLite's consistent backup API from a read-only connection,
+copies logical account records, does not copy tokens, and refuses any nonempty
+destination. A partial failed import needs inspection/recovery, not blind rerun.
+Synthetic smoke verifies private S3, durable session/job/result/history,
+Origin rejection, stale-lease fencing, duplicate delivery and account deletion.
+The optional model smoke adds a paid synthetic-only request from the real worker.
 
-## Acceptance And Recovery
+Register the exact output URL plus `callback` in Spotify while preserving
+localhost. Keep Web API/Web Playback SDK enabled. Reconnect Premium and accept
+the requested scopes. Friends require both Spotify Development Mode access and
+the app account allowlist. A public HTTPS URL does not enable general signup.
 
-- Verify the exact AWS identity before every provisioning/deployment operation.
-- Check Linux startup, HTTPS certificate, health, Secure cookies and host/origin
-  denials. Confirm tokens, database, environment and deployment files are not URLs.
-- Reconnect the allowed Premium account, sync once in a fresh hosted installation,
-  and test build/refine, playback, export, sign-out and cached-state restoration.
-- Check denied/unlisted accounts and concurrent access. Never claim actual
-  playback from the SDK simulator or an HTTP health response.
-- Back up SQLite consistently with its backup API, store backups privately,
-  test restore and record retention/cost before enabling paid backup resources.
-  Local-only backup files do not protect against loss of the server/disk.
-- Roll back the release symlink; leave the private data directory intact. A
-  process restart requires Spotify reconnect, not another completed library sync.
-- Never automatically repeat an ambiguous playlist export after a restart.
+## Recovery And Limits
 
-Cloud acceptance and resource identities belong in private operational records,
-not in this public template. No production credentials belong in GitHub.
+- Do not automatically replay interrupted/ambiguous Spotify exports. Inspect
+  the durable write phase and known playlist ID first. Completed delivery IDs
+  are ignored; crash interruption is not proof that Spotify did nothing.
+- Inspect the dedicated failure queue and sanitized project logs after failures.
+  An active account lease expires after 45 seconds (HTTP) or 650 seconds (worker).
+- Source edits require rebuild/deploy. Do not rerun import to update production.
+  Manual Spotify sync reconciles the library; sign-in does not resync it.
+- Roll back code by using a previously recorded release key in the private
+  receipt, then `configure` and `finalize`. Never overwrite current user data
+  from an old local database as part of code rollback.
+- State table and data bucket are retained on stack deletion. They are durable
+  primary storage, not an independent backup. Point-in-time recovery/versioning
+  is not enabled. The original local snapshot survives migration, but does not
+  protect new cloud-only history. Record this tradeoff before wider rollout.
+- Genuine Spotify playback, owner listening quality, a live explicit export,
+  chaos/failure-injection coverage and actual month-end billing remain distinct
+  acceptance items; synthetic tests cannot establish them.
+
+Official runtime references: [Function URLs](https://docs.aws.amazon.com/lambda/latest/dg/urls-configuration.html),
+[Lambda lifecycle](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtime-environment.html),
+[DynamoDB TTL](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TTL.html).
+The old fixed-server templates are preserved only as historical alternatives.

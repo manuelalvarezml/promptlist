@@ -2,9 +2,10 @@
 
 Turn a request into a Spotify playlist made from your own music library.
 
-Local-first Rust application with a floating prompt composer, live progress,
+Rust application with a floating prompt composer, live progress,
 scrollable track queues, editable previews and private Spotify export. Library
-snapshots and prompt history persist locally; syncing is always manual.
+snapshots and prompt history persist locally or in private AWS storage;
+syncing is always manual.
 
 Refine a selection conversationally with the second prompt field. Each turn
 retains previous preferences and creates a linked history entry. Simple count
@@ -27,7 +28,7 @@ SPOTIFY_CLIENT_ID=your_client_id
 SPOTIFY_REDIRECT_URI=http://127.0.0.1:8787/callback
 LASTFM_API_KEY=your_lastfm_key
 OPENAI_API_KEY=your_openai_key
-OPENAI_MODEL=gpt-5.4-mini
+OPENAI_MODEL=gpt-6.1-sol
 ```
 
 Keys may be unquoted. Never commit them. Spotify uses PKCE, so a client secret
@@ -35,6 +36,11 @@ is not required. Last.fm supplies community tags; OpenAI translates requests
 that the local parser cannot handle. Missing providers reduce matching quality
 but do not prevent the local fallback. Provider access and quotas depend on
 your accounts and current provider rules.
+
+The default interpreter is **GPT-6.1 Sol, medium reasoning**, with a 4,000-token
+output ceiling and a 45-second request timeout. `OPENAI_MODEL` overrides the
+model. Exact local requests and simple refinements need no model call.
+Only prompt text and prompt-derived preferences go to OpenAI, not your library.
 
 ```sh
 cargo run --locked --bin promptlist
@@ -74,8 +80,8 @@ back to a solid graphite background and system typography.
 
 ## Privacy And Safety
 
-- Binds only to loopback. Hosted mode requires an HTTPS reverse proxy and an
-  explicit Spotify account allowlist; it is not an open-signup service.
+- Local mode binds only to loopback. Hosted mode uses an HTTPS AWS Lambda
+  Function URL and an explicit Spotify account allowlist; no open signup.
 - `.data/` contains private account-scoped SQLite snapshots, prompt/results
   history and app-action records. Do not commit or publicly upload it.
 - History remains until account deletion; action records expire after 90 days.
@@ -83,17 +89,18 @@ back to a solid graphite background and system typography.
   deleted with the account. Private audit exports include both forms of data;
   upgrade the application database before using the matching export binary.
   No external analytics or model training pipeline is enabled. The selected
-  [serverless hosting plan](deploy/README.md) is not deployed yet.
+  [serverless hosting guide](deploy/README.md) describes the deployed private beta.
 - OpenAI receives request text and static schemas, not your Spotify library.
   Refinement adds the original request and previous prompt-derived preferences,
   never result tracks, account identity or activity logs.
   Last.fm receives artist/title lookups; ReccoBeats receives candidate track IDs.
 - Provider cache directives are honored. No-store numeric features are transient.
-- Tokens remain in memory. The playback SDK receives the short-lived access token
+- Local tokens remain in memory. Hosted sessions and server-only tokens persist
+  in private encrypted DynamoDB with a 24-hour expiry. The playback SDK receives the short-lived access token
   through an authenticated, same-origin, CSRF-protected, no-store endpoint.
   Refresh tokens stay server-only; no token is stored in browser storage.
-  Signing out retains saved local state; confirmed
-  account-data deletion clears that account's records. Separate backups and
+  Signing out retains saved state; confirmed hosted account-data deletion
+  invalidates sessions and clears that account's DynamoDB/S3 records. Separate local copies and
   developer exports must be deleted separately.
 - CSRF/origin checks, preview nonces and ambiguous-write protections guard
   Spotify exports. The browser never automatically retries a write.
@@ -151,8 +158,8 @@ They cover progress without navigation, export, history, edits, player controls,
 scrolling and desktop/mobile layout. Simulator checks are not real DRM/autoplay
 or Premium account acceptance.
 
-Local use requires no AWS resources or other music projects. The optional
-[hosting guide](deploy/README.md) describes the proposed small-server release;
-the presence of deployment files does not mean a cloud instance is running.
+Local use requires no AWS resources or other music projects. The
+[hosting guide](deploy/README.md) covers the isolated pay-per-use Lambda release,
+durable jobs, private analytics, deployment commands and recovery limits.
 Vendored Lucide icons
 retain their license in `assets/LUCIDE-LICENSE`.

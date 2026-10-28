@@ -19,6 +19,7 @@ use axum::{
 };
 use maud::{DOCTYPE, Markup, html};
 mod playback;
+pub mod serverless;
 mod views;
 use serde::Deserialize;
 use std::{
@@ -1568,9 +1569,16 @@ async fn build_soft_preview(
     let plan = if exact.is_none() {
         if let Some(key) = app.config.openai_key.as_deref() {
             build_progress(app, id, job, "Interpreting musical preferences".into())?;
-            match crate::preferences::interpret(&app.http, key, &prompt).await {
+            match crate::preferences::interpret_with_model(
+                &app.http,
+                key,
+                &prompt,
+                &app.config.openai_model,
+            )
+            .await
+            {
                 Ok(plan) => {
-                    engine = "gpt-5.4-mini/preferences-v1";
+                    engine = &app.config.openai_model;
                     plan
                 }
                 Err(_) => {
@@ -3511,7 +3519,10 @@ mod tests {
         let key = config.openai_key.as_deref().expect("OpenAI key required");
         let client = provider::http_client().unwrap();
         let preflight = client
-            .get("https://api.openai.com/v1/models/gpt-5.4-mini")
+            .get(format!(
+                "https://api.openai.com/v1/models/{}",
+                crate::config::DEFAULT_MODEL
+            ))
             .bearer_auth(key)
             .send()
             .await

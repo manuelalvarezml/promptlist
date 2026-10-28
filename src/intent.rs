@@ -540,8 +540,8 @@ pub fn request_body(prompt: &str) -> Result<Value> {
             "limit":{"type":"integer"}},
         "required":["source_ids","artist_contains","title_contains","explicit","release_year","saved_year","duration_ms","features","genres","genre_match_scope","energy_preset","context","limit"]});
     Ok(
-        json!({"model":"gpt-5.4-mini", "store":false, "max_output_tokens":2000,
-        "reasoning":{"effort":"low"},"instructions":INSTRUCTIONS,"input":prompt,
+        json!({"model":crate::config::DEFAULT_MODEL, "store":false, "max_output_tokens":4000,
+        "reasoning":{"effort":"medium"},"instructions":INSTRUCTIONS,"input":prompt,
         "text":{"format":{"type":"json_schema","name":"playlist_intent","strict":true,
             "schema":{"type":"object","additionalProperties":false,
                 "properties":{"status":{"type":"string","enum":["ready","unsupported","clarification"]},
@@ -1254,9 +1254,10 @@ mod tests {
         let prompt = "energy >= 0.7";
         let body = request_body(prompt).unwrap();
         assert_eq!(body["input"], prompt);
-        assert_eq!(body["model"], "gpt-5.4-mini");
+        assert_eq!(body["model"], crate::config::DEFAULT_MODEL);
         assert_eq!(body["store"], false);
-        assert_eq!(body["max_output_tokens"], 2000);
+        assert_eq!(body["max_output_tokens"], 4000);
+        assert_eq!(body["reasoning"]["effort"], "medium");
         assert_eq!(body["text"]["format"]["strict"], true);
         assert_eq!(body["text"]["format"]["type"], "json_schema");
         assert!(body.get("tools").is_none());
