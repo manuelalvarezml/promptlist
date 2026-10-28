@@ -79,7 +79,11 @@ back to a solid graphite background and system typography.
 - `.data/` contains private account-scoped SQLite snapshots, prompt/results
   history and app-action records. Do not commit or publicly upload it.
 - History remains until account deletion; action records expire after 90 days.
-  No external analytics or model training pipeline is enabled.
+  Compact daily action/outcome/timing summaries remain for 365 UTC days and are
+  deleted with the account. Private audit exports include both forms of data;
+  upgrade the application database before using the matching export binary.
+  No external analytics or model training pipeline is enabled. The selected
+  [serverless hosting plan](deploy/README.md) is not deployed yet.
 - OpenAI receives request text and static schemas, not your Spotify library.
   Refinement adds the original request and previous prompt-derived preferences,
   never result tracks, account identity or activity logs.

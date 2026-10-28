@@ -129,6 +129,7 @@ impl Store {
         tx.execute("DELETE FROM tag_cache WHERE account=?", [account])?;
         tx.execute("DELETE FROM prompt_runs WHERE account=?", [account])?;
         tx.execute("DELETE FROM app_events WHERE account=?", [account])?;
+        tx.execute("DELETE FROM event_daily WHERE account=?", [account])?;
         tx.execute("DELETE FROM audit_users WHERE account=?", [account])?;
         tx.commit()?;
         Ok(())
@@ -166,6 +167,10 @@ impl Store {
         self.db.execute(
             "DELETE FROM app_events WHERE created<?",
             [now() - 90 * 86400],
+        )?;
+        self.db.execute(
+            "DELETE FROM event_daily WHERE day<?",
+            [(now() / 86400 - 364) * 86400],
         )?;
         self.db.execute(
             "DELETE FROM records WHERE kind!='snapshot' AND updated < ?",

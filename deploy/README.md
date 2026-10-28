@@ -1,10 +1,120 @@
 # Hosted Private Beta
 
-Status: production configuration and Linux build preparation, not a live release.
-Choose the cost envelope and public HTTPS hostname before provisioning. No
-existing AWS website, credentials or data store is a runtime dependency.
+Status: serverless migration selected on 2026-10-28; not implemented or live.
+The owner selected **under US$3/month in AWS charges**, excluding provider API
+usage, and an AWS-provided HTTPS address until a domain is purchased. This
+supersedes the Lightsail recommendation below. No existing AWS website,
+credentials or data store is a runtime dependency.
 
-## Smallest Practical Server
+## Selected Serverless Direction
+
+- Rust Lambda HTTP function with a stable AWS Function URL for the application,
+  OAuth callback and assets. No purchased domain, certificate renewal, API
+  Gateway, always-on instance or provisioned concurrency required initially.
+- Separate invoked Rust worker for sync/build/coverage, with durable queued job
+  state, progress, bounded retries and an account-level lease. A submitted job
+  must survive process termination; do not rely on `tokio::spawn` after an HTTP
+  response. Choose and test a durable dispatch/outbox mechanism before release.
+- DynamoDB on-demand for small session/job records, history indexes and bounded
+  event batches. Use conditional writes for ownership, deletion generations,
+  deduplication and ambiguous-export receipts. Do not fit entire libraries or
+  unlimited prompt results into one item. Persist server-only credentials
+  encrypted, with least-privilege IAM and expiry enforced on every read.
+- Private S3 for compressed library snapshots, larger prompt/result documents
+  and analytical archives. Use account-scoped opaque keys and immutable objects
+  with conditional pointer updates. Do not copy/upload the SQLite file after
+  every request or share writable `/tmp` state between Lambda instances.
+- Keep functions outside a customer VPC: no NAT gateway, EFS, RDS, load balancer,
+  container registry or separate analytics service. Package compiled Rust as a
+  zip; benchmark memory and architecture before selecting their final settings.
+- Cache public versioned assets in the browser; all account pages, OAuth,
+  playback tokens and APIs remain private/no-store. CloudFront is optional only
+  if its verified cost/abuse protection improves the simple Function URL design.
+
+The current application still uses SQLite and in-memory sessions/workers.
+The existing Dockerfile/systemd files are historical server preparation, not a
+Lambda implementation. Do not deploy the current server unchanged on Lambda.
+
+## Budget And Guardrails
+
+Under $3 is a **light-use target, not a guaranteed AWS billing cap**. Model the
+incremental cost without assuming unused account-wide free allowances or trial
+credits; include requests, compute, storage, logs, transfer and retries.
+
+Illustration using AWS's published x86 Lambda rate of $0.0000166667/GB-second:
+500 builds at 512 MiB and 60 billed seconds cost about **$0.25 in worker compute**;
+500 at five minutes cost about **$1.25**. These are not whole-app estimates or
+measured Promptlist runtimes. Sync, coverage, HTTP/status requests, cold starts,
+storage and other charges are additional. Verify the chosen region's rates and
+measure actual jobs before assigning a monthly allowance.
+
+Required before public release: explicit account allowlist, small concurrency
+limits, per-account/month work admission using worst-case billed duration,
+timeouts, bounded provider retries, status polling backoff, short redacted-log
+retention and storage/object limits. Reject new expensive work before exhausting
+the allowance while preserving history reads and existing receipts. Reserve
+headroom for anonymous traffic and deletion. Billing alerts are delayed and are
+not a hard spending stop; never promise protection against all public abuse.
+
+## History And Behavior Data
+
+Current local implementation stores submitted prompts/refinements, structured
+interpretations, original/latest playlist results, outcomes and elapsed times per
+account until deletion. Detailed actions expire after 90 days. Daily action-kind
+counts, outcome counts and timing sums survive for 365 UTC days; no prompt text
+is duplicated in these aggregates. Migration backfills existing actions once.
+Account deletion removes both raw actions and aggregates. The private audit
+export is schema version 2 and includes the summaries.
+
+Tracked actions include navigation, submissions, jobs, edits, exports and play
+starts. This is not a complete playback telemetry stream: SDK pause, seek and
+volume interactions are not currently instrumented. No keystrokes, passwords,
+OAuth credentials or raw provider bodies enter analytics; no behavior/library
+data goes to an AI model or third-party analytics service.
+
+For serverless, retain the same account-scoped contract. Persist bounded event
+batches as part of existing requests, not a separate Lambda invocation per
+click. Flush before completing an invocation, not on a background timer.
+Deduplicate batches and job outcomes so retries cannot inflate daily counts.
+Use DynamoDB for active records/indexes and compact private S3 batches for
+longer retention; benchmark batching rather than assuming fewer HTTP calls mean
+fewer billed DynamoDB write units. Prefer S3 Standard at beta scale; tiny-object
+archive transitions can cost more than they save.
+
+Cloud objects must use Block Public Access, bucket-owner enforcement, TLS-only
+access, SSE-S3 and project-specific least-privilege roles. Enforce expiry in reads
+and exports because DynamoDB TTL/S3 lifecycle deletion is asynchronous. Account
+deletion must invalidate workers and purge indexes, objects, versions and queued
+events, with tombstones preventing restoration from old recovery backups.
+Validate this before enabling any cloud archive. Pseudonymous exports are still
+personal data, not public fixtures. **No cloud analytics or backup exists yet.**
+
+## Migration Acceptance
+
+1. Separate HTTP/session/job persistence from the existing matching code, keeping
+   the local runtime working. Move auth state and refresh coordination out of
+   process memory without exposing tokens to logs or browser storage.
+2. Implement durable jobs, idempotent action history and account deletion; test
+   cold starts, concurrent sessions, worker termination, duplicate delivery,
+   lost responses and ambiguous Spotify writes. Never replay a playlist export
+   just because a worker retried.
+3. Package/test Linux Rust functions and isolated infrastructure with measured
+   memory/time/storage, a cost model and least-privilege policies. Verify the
+   intended AWS identity immediately before provisioning; never use default.
+4. Register the generated HTTPS callback while preserving localhost. Reconnect
+   the owner account, validate private state restoration, build/refine/playback
+   and explicit export, then record actual cost and rollback evidence.
+
+Sources checked 2026-10-28:
+[Function URL/HTTPS](https://docs.aws.amazon.com/lambda/latest/dg/urls-configuration.html),
+[Lambda lifecycle](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtime-environment.html),
+[Lambda pricing](https://aws.amazon.com/lambda/pricing/),
+[DynamoDB pricing](https://aws.amazon.com/dynamodb/pricing/),
+[TTL delay](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TTL.html),
+[S3 pricing](https://aws.amazon.com/s3/pricing/),
+[SSE-S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/default-encryption-faq.html).
+
+## Historical Server Alternative (Not Selected)
 
 One Lightsail Linux `nano_3_0` instance in us-east-2: 512 MB RAM, 20 GB disk,
 public IPv4 and 1 TB transfer for **US$5/month**, before tax and overages.
