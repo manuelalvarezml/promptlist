@@ -35,8 +35,8 @@ pub(super) fn composer(s: &Session, snapshot: &Snapshot, preview: Option<&Previe
         div.build-layout {
             section.composer {
                 form.composer-form method="post" action="/build" {(hidden(&s.csrf))
-                    label.prompt-field for="prompt" {"A mood. A moment. A playlist."}
-                    textarea.floating-prompt id="prompt" name="prompt" rows="4" maxlength="2000" placeholder="Something strange.\nA little electric.\nEntirely you." {(form.prompt)}
+                    label.sr-only for="prompt" {"Playlist prompt"}
+                    textarea.floating-prompt id="prompt" name="prompt" rows="4" maxlength="2000" placeholder="Describe your playlist" {(form.prompt)}
                     div.composer-actions {
                         label.field {"Playlist name" input name="name" maxlength="100" value=(form.name);}
                         button.primary.build-button type="submit" disabled[unavailable] {"Build preview" span.forward-icon {(ui::icon("arrow-up"))}}
@@ -59,9 +59,22 @@ pub(super) fn composer(s: &Session, snapshot: &Snapshot, preview: Option<&Previe
                         }
                     }
                 }
+                @if let Some(p)=preview {@if p.run_id.is_some() {
+                    section.refinement {
+                        @if let Some(refinement)=&form.refinement {
+                            ol.conversation aria-label="Recent refinements" {@for message in &refinement.recent_messages {li {(message)}}}
+                        }
+                        form.refinement-form method="post" action="/refine" {(hidden(&s.csrf))
+                            input type="hidden" name="preview_id" value=(p.id);
+                            label for="refinement" {"Refine playlist"}
+                            textarea id="refinement" name="prompt" maxlength="2000" rows="3" placeholder="Less intense, more unexpected..." required {}
+                            button.primary type="submit" disabled[unavailable||matches!(p.phase,Phase::Creating|Phase::Created)] {"Refine playlist" span.forward-icon {(ui::icon("arrow-up"))}}
+                        }
+                    }
+                }}
                 @if s.account.is_some() && snapshot.tracks.is_empty() {div.toolbar {(action_form(&s.csrf,"/sync","Sync library","quiet",s.job.running))}}
             }
-            section.preview id="selection" {
+            section.preview id="selection" data-preview-id=(preview.map(|p|p.id.as_str()).unwrap_or("")) {
                 div.preview-header {h2 {"Your mix"} span.result-count {(preview.map(|p|p.track_ids.len()).unwrap_or(0)) " tracks"}}
                 @if let Some(p)=preview {
                     h3 {(p.name)}
@@ -73,7 +86,9 @@ pub(super) fn composer(s: &Session, snapshot: &Snapshot, preview: Option<&Previe
                             span.track-number {(format!("{:02}",index+1))}
                             @if let Some(image)=&track.image {img.cover src=(image) alt="" loading="lazy" width="40" height="40";}
                             div.track-info {a href=(format!("https://open.spotify.com/track/{id}")) rel="noreferrer" target="_blank" {(track.name)} small {(track.artists.join(", "))}}
-                            @if p.phase==Phase::Draft {div.actions {
+                            div.actions {
+                                (ui::preview_button(id,&track.name))
+                            @if p.phase==Phase::Draft {
                                 (edit_button(&s.csrf,p,index,"up","arrow-up","Move track up",s.job.running||index==0))
                                 (edit_button(&s.csrf,p,index,"down","arrow-down","Move track down",s.job.running||index+1==p.track_ids.len()))
                                 (edit_button(&s.csrf,p,index,"remove","x","Remove track",s.job.running))
@@ -102,8 +117,7 @@ pub(super) fn composer(s: &Session, snapshot: &Snapshot, preview: Option<&Previe
                     div.result-empty {
                         @let covers: Vec<_> = snapshot.tracks.values().filter_map(|t|t.image.as_deref()).take(5).collect();
                         @if !covers.is_empty() {div.cover-stack aria-hidden="true" {@for image in covers {img src=(image) alt="" width="120" height="120";}}}
-                        h3 {"A new way into your music."}
-                        p {"Your next selection starts here."}
+                        h3 {"No selection yet"}
                     }
                 }
             }
@@ -157,10 +171,11 @@ pub(super) fn history_view(
         @for run in runs.iter().take(25) {
             article.history-entry {
                 div.history-heading {time {(chrono::DateTime::from_timestamp(run.created_at,0).map(|d|d.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_default())} span.badge {(run.status)}}
+                @if run.controls.get("refinement").is_some_and(|r|!r.is_null()) {small {"Refinement"}}
                 h2 {(if run.prompt.is_empty() {"Manual filters"}else{&run.prompt})}
                 p.muted {(run.latest_result.as_ref().map(|r|r.tracks.len()).unwrap_or(0)) " tracks" @if let Some(ms)=run.elapsed_ms {" / " (format!("{:.1}s",ms as f64/1000.))}}
                 @if let Some(error)=&run.error {p.notice {(error)}}
-                form method="post" action="/history/reuse" {(hidden(csrf)) input type="hidden" name="run_id" value=(run.id);button.quiet disabled[running] {"Use prompt again"}}
+                form method="post" action="/history/reuse" {(hidden(csrf)) input type="hidden" name="run_id" value=(run.id);button.quiet disabled[running] {(if run.controls.get("refinement").is_some_and(|r|!r.is_null()) {"Use original prompt"}else{"Use prompt again"})}}
                 @for (label,result) in [("Original result",run.initial_result.as_ref()),("Latest result",run.latest_result.as_ref())] {
                     @if let Some(result)=result {
                         details.history-result {summary {(label) " / " (result.tracks.len())}
@@ -231,9 +246,20 @@ pub(super) fn render(
     html! {(DOCTYPE) html lang="en" {head {
             meta charset="utf-8";meta name="viewport" content="width=device-width, initial-scale=1";
             title {"Promptlist / " (title)} link rel="stylesheet" href="/style.css";
+            meta name="csrf-token" content=(s.csrf);
             script src="/app.js" defer {}
+            script src="/player.js" defer {}
         } body {
-            header {a.brand.wordmark href="/" {"promptlist" span.brand-accent {"/"}} div.account {
+            header {
+                div.brand-cluster {a.brand.wordmark href="/" {"promptlist"}
+                    div.header-status id="header-status" {
+                        @if let Some(notice)=&s.notice {span.connection-notice title=(notice) role="status" {(notice)}}
+                        (ui::job_status(&s.job.text,running,s.job.publishing,s.job.completed,s.job.total,&s.csrf))
+                        span id="playback-status" role="status" aria-live="polite" {}
+                    }
+                }
+                (ui::player(connected))
+                div.account {
                 @if connected {
                     button.quiet.account-trigger popovertarget="account-menu" aria-label="Account menu" {span.dot.online {} (account_name) img src="/icons/arrow-down" alt="" width="14" height="14";}
                     div.account-popover id="account-menu" popover="auto" {
@@ -242,15 +268,12 @@ pub(super) fn render(
                         (action_form(&s.csrf,"/logout","Sign out","quiet",false))
                         a.danger href="/?tab=settings#delete-data" {"Delete local data..."}
                     }
-                } @else {span.status {span.dot.offline {} "Not connected"}}
+                } @else {(action_form(&s.csrf,"/auth/connect","Connect Spotify","quiet account-trigger",false))}
             }}
             main data-view=(view.tab) {
-                section.heading {div {p.eyebrow {"YOUR MUSIC, REIMAGINED"} h1 {(if title=="Build a playlist" {"Your next playlist."}else{title})}}}
-                @if let Some(notice)=&s.notice {p.notice role="status" {(notice) @if notice.contains("Enable music matching") {" " a href="/?tab=settings" {"Open settings"}}}}
-                (ui::job_status(&s.job.text,running,s.job.publishing,s.job.completed,s.job.total,&s.csrf))
+                @if title!="Build a playlist" {section.heading {h1 {(title)}}}
                 (ui::navigation(title))
-                (ui::library_stats(snapshot))
-                @if !connected {section.connection {p.muted {"Spotify disconnected"} (action_form(&s.csrf,"/auth/connect","Connect Spotify","primary",false))}}
+                @if title!="Build a playlist" {(ui::library_stats(snapshot))}
                 @if title=="Build a playlist" {
                     (composer(s,snapshot,preview))
                 } @else if !connected {
@@ -265,8 +288,10 @@ pub(super) fn render(
                         h2 {"History & product analytics"}
                         p.muted {"Submitted prompts, interpretations, original and edited results, and export outcomes are saved privately on this computer for your history and developer review. App requests, navigation, searches (length only), edits, syncs and job timings are recorded for 90 days. Prompt history remains until account deletion. No keystrokes, passwords, OAuth tokens or raw provider responses are recorded. Nothing is uploaded to an analytics service."}
                         h2 {"Request interpretation"}
-                        p.muted {"Developer exports are separate private files and must be deleted separately. History is not sent to AI models or used for model training."}
-                        p.muted {(if capabilities.openai {"Requests use local parsing first, then GPT-5.4 mini to interpret subjective preferences. Only your request text and a static schema go to OpenAI, never library metadata or history. If AI or provider evidence is unavailable, matching uses a disclosed best-effort local fallback. Do not put private account details in a prompt."} else {"Local request and preference parsing is active. OpenAI is not configured."})}
+                        p.muted {"Developer exports are separate private files and must be deleted separately. Result lists and activity logs are never sent to AI. No model training is enabled."}
+                        p.muted {(if capabilities.openai {"Requests use local parsing first, then GPT-5.4 mini to interpret subjective preferences. Refinements send your original request, previous preference interpretation and latest message, not your library or result tracks. If AI or provider evidence is unavailable, matching uses a disclosed best-effort local fallback. Do not put private account details in a prompt."} else {"Local request and preference parsing is active. OpenAI is not configured."})}
+                        h2 {"Spotify playback"}
+                        p.muted {"The Web Playback SDK uses your linked Spotify Premium account. A short-lived access token is supplied to Spotify's SDK in browser memory; the refresh token stays on the server. Connecting prepares a player but does not start music. Playback can move audio from another Spotify device. No audio is downloaded or analyzed by Promptlist."}
                     }
                     section.settings-section id="delete-data" {
                         h2 {"Local account data"}

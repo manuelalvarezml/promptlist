@@ -1,0 +1,13 @@
+*
+!Cargo.toml
+!Cargo.lock
+!src/
+!src/**
+!assets/
+!assets/**
+!tests/
+!tests/**
+!deploy/
+!deploy/**
+assets/island-background.jpg
+assets/fonts/

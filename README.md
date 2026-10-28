@@ -6,6 +6,11 @@ Local-first Rust application with a floating prompt composer, live progress,
 scrollable track queues, editable previews and private Spotify export. Library
 snapshots and prompt history persist locally; syncing is always manual.
 
+Refine a selection conversationally with the second prompt field. Each turn
+retains previous preferences and creates a linked history entry. Simple count
+reductions preserve the current order without another lookup. Play buttons
+start the account-linked Spotify player in the page header.
+
 ## Run Locally
 
 Requires a current Rust toolchain and a Spotify developer application with Web
@@ -56,28 +61,68 @@ the completed library snapshot remains available without another sync.
 
 Axum, Tokio, Maud, reqwest and SQLite. All playlist logic, provider adapters,
 authorization, persistence and HTML rendering are Rust. A small dependency-free
-browser controller updates progress/results without document reloads. It has
-no provider credentials or matching logic. No Node build or frontend framework
-is required to run the application.
+browser controller updates progress/results without document reloads. A separate
+controller integrates Spotify's JavaScript Web Playback SDK; playlist decisions
+remain in Rust. No Node build or frontend framework is required to run the app.
 
 See [UI_COMPONENTS.md](UI_COMPONENTS.md) for the component map, design tokens
 and the efficient workflow for consistent interface changes.
+The painting-led Island Stone theme uses optional locally supplied artwork and
+Satoshi fonts. See [theme assets](assets/THEME_ASSETS.md) for setup and licensing.
+These binaries are not redistributed in this repository; absent assets fall
+back to a solid graphite background and system typography.
 
 ## Privacy And Safety
 
-- Binds only to loopback. This is a local application, not a hosted service.
+- Binds only to loopback. Hosted mode requires an HTTPS reverse proxy and an
+  explicit Spotify account allowlist; it is not an open-signup service.
 - `.data/` contains private account-scoped SQLite snapshots, prompt/results
   history and app-action records. Do not commit or publicly upload it.
 - History remains until account deletion; action records expire after 90 days.
   No external analytics or model training pipeline is enabled.
 - OpenAI receives request text and static schemas, not your Spotify library.
+  Refinement adds the original request and previous prompt-derived preferences,
+  never result tracks, account identity or activity logs.
   Last.fm receives artist/title lookups; ReccoBeats receives candidate track IDs.
 - Provider cache directives are honored. No-store numeric features are transient.
-- Tokens remain in memory. Signing out retains saved local state; confirmed
+- Tokens remain in memory. The playback SDK receives the short-lived access token
+  through an authenticated, same-origin, CSRF-protected, no-store endpoint.
+  Refresh tokens stay server-only; no token is stored in browser storage.
+  Signing out retains saved local state; confirmed
   account-data deletion clears that account's records. Separate backups and
   developer exports must be deleted separately.
 - CSRF/origin checks, preview nonces and ambiguous-write protections guard
   Spotify exports. The browser never automatically retries a write.
+- The SDK connects when signed in but audio starts only on a playback action.
+  Promptlist never proxies, downloads or analyzes Spotify audio.
+
+## Spotify Playback
+
+Enable **Web API** and **Web Playback SDK** in the Spotify app dashboard.
+Use a Premium account, then reconnect to approve `streaming`, `user-read-email`,
+`user-read-private` and `user-modify-playback-state`, alongside existing library
+and private-playlist scopes. No client secret or extra API key is needed.
+The email scope is required by the SDK; Promptlist does not persist email.
+
+The header radio shows the SDK's current track/artwork, play/pause, previous/next,
+seek and volume. Row Play activates browser audio in the click handler and starts
+the selected song plus the remaining preview order on the explicit browser device.
+Rust verifies session, CSRF, account, current preview nonce and track membership.
+No arbitrary Spotify API proxy, automatic write retries or embed double-click.
+Switching app views and refreshing results preserves the player. A full browser
+reload reconnects it; playing here can move playback from another Spotify device.
+
+Desktop (1024px+) uses a fixed viewport with internal scrolling. Mobile keeps a
+normal scrolling page and a two-row header. iOS volume uses hardware controls.
+Browser protected-media/autoplay restrictions, account eligibility and regional
+availability still apply; genuine account playback needs live acceptance.
+Private development testing does not imply Spotify commercial streaming approval.
+
+Official implementation references (checked 2026-10-28):
+[SDK requirements](https://developer.spotify.com/documentation/web-playback-sdk),
+[SDK methods/events and activation](https://developer.spotify.com/documentation/web-playback-sdk/reference),
+[web player tutorial](https://developer.spotify.com/documentation/web-playback-sdk/howtos/web-app-player),
+[start playback API](https://developer.spotify.com/documentation/web-api/reference/start-a-users-playback).
 
 ## Verify
 
@@ -97,8 +142,13 @@ cargo test --lib browser_fixture -- --ignored --nocapture
 Then run `tests/browser-acceptance.cjs` with Node and Playwright installed.
 `PLAYWRIGHT_MODULE` may point to an existing Playwright package;
 `PLAYWRIGHT_CHANNEL` defaults to `chrome`. Tests use port 8788 and synthetic
-data only. They cover progress without navigation, export, history, edits,
-scrolling and desktop/mobile layout.
+data only, including a fixture-only SDK simulator with no Spotify audio/network.
+They cover progress without navigation, export, history, edits, player controls,
+scrolling and desktop/mobile layout. Simulator checks are not real DRM/autoplay
+or Premium account acceptance.
 
-No AWS resources or other music projects are required. Vendored Lucide icons
+Local use requires no AWS resources or other music projects. The optional
+[hosting guide](deploy/README.md) describes the proposed small-server release;
+the presence of deployment files does not mean a cloud instance is running.
+Vendored Lucide icons
 retain their license in `assets/LUCIDE-LICENSE`.

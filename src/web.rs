@@ -18,6 +18,7 @@ use axum::{
     routing::{get, post},
 };
 use maud::{DOCTYPE, Markup, html};
+mod playback;
 mod views;
 use serde::Deserialize;
 use std::{
@@ -128,8 +129,21 @@ pub fn router(app: App) -> Router {
     Router::new()
         .route("/", get(home))
         .route("/style.css", get(style))
+        .route("/theme/{name}", get(theme_asset))
         .route("/app.js", get(browser_controller))
+        .route(
+            "/player.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../assets/player.js"),
+                )
+            }),
+        )
+        .route("/api/playback/token", post(playback::token))
+        .route("/api/playback/play", post(playback::play))
         .route("/api/job", get(job_status))
+        .route("/refine", post(refine))
         .route("/icons/{name}", get(icon_asset))
         .route("/health", get(|| async { "ok" }))
         .route("/auth/connect", post(connect))
@@ -151,12 +165,12 @@ pub fn router(app: App) -> Router {
 }
 
 async fn security(State(app): State<App>, request: Request, next: Next) -> Response {
-    let expected = format!("127.0.0.1:{}", app.config.port());
+    let expected = app.config.host_header();
     if request
         .headers()
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
-        != Some(&expected)
+        != Some(expected)
     {
         return (StatusCode::FORBIDDEN, "Invalid host").into_response();
     }
@@ -174,6 +188,7 @@ async fn security(State(app): State<App>, request: Request, next: Next) -> Respo
     let event_kind = if request.method() == axum::http::Method::POST {
         match request.uri().path() {
             "/build" => Some("build_submit"),
+            "/refine" => Some("refine_submit"),
             "/sync" => Some("sync_submit"),
             "/coverage" => Some("coverage_submit"),
             "/preview/edit" => Some("preview_edit_submit"),
@@ -182,6 +197,7 @@ async fn security(State(app): State<App>, request: Request, next: Next) -> Respo
             "/pause" => Some("pause_submit"),
             "/logout" => Some("sign_out"),
             "/history/reuse" => Some("history_reuse_submit"),
+            "/api/playback/play" => Some("playback_start"),
             _ => None,
         }
     } else {
@@ -223,7 +239,13 @@ async fn security(State(app): State<App>, request: Request, next: Next) -> Respo
     );
     headers.insert("x-content-type-options", "nosniff".parse().unwrap());
     headers.insert("x-frame-options", "DENY".parse().unwrap());
-    headers.insert("content-security-policy","default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self'; img-src 'self' https://i.scdn.co; form-action 'self' https://accounts.spotify.com; base-uri 'none'; frame-ancestors 'none'".parse().unwrap());
+    if app.config.hosted() {
+        headers.insert(
+            "strict-transport-security",
+            "max-age=31536000".parse().unwrap(),
+        );
+    }
+    headers.insert("content-security-policy","default-src 'none'; script-src 'self' https://sdk.scdn.co; connect-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' https://i.scdn.co https://*.scdn.co; frame-src https://sdk.scdn.co; form-action 'self' https://accounts.spotify.com; base-uri 'none'; frame-ancestors 'none'".parse().unwrap());
     response
 }
 
@@ -338,10 +360,24 @@ async fn home(State(app): State<App>, headers: HeaderMap, Query(view): Query<Vie
     let (id, new_cookie) = match session_id(&rt, &headers) {
         Ok(id) => (id, false),
         Err(_) => {
-            if rt.sessions.len() >= 16 {
+            let capacity = if app.config.hosted() { 128 } else { 16 };
+            if rt.sessions.len() >= capacity && app.config.hosted() {
+                // Visitors cannot exhaust every slot and lock out signed-in accounts.
+                let oldest = rt
+                    .sessions
+                    .iter()
+                    .filter(|(_, s)| s.account.is_none() && s.pending.is_none())
+                    .min_by_key(|(_, s)| s.created)
+                    .map(|(id, _)| id.clone());
+                if let Some(oldest) = oldest {
+                    rt.sessions.remove(&oldest);
+                    rt.last_views.remove(&oldest);
+                }
+            }
+            if rt.sessions.len() >= capacity {
                 return (
                     StatusCode::TOO_MANY_REQUESTS,
-                    "Too many local browser sessions. Restart the app.",
+                    "Too many browser sessions. Please try again later.",
                 )
                     .into_response();
             }
@@ -465,8 +501,24 @@ async fn home(State(app): State<App>, headers: HeaderMap, Query(view): Query<Vie
         Ok(rows) => rows.unwrap_or_default(),
         Err(e) => return error_response(e),
     };
+    if s.build.is_none() {
+        let saved = account
+            .as_ref()
+            .zip(preview.as_ref())
+            .and_then(|(a, p)| {
+                p.run_id.as_deref().and_then(|run| {
+                    history::get(&rt.store.db, a.profile.account(), run)
+                        .ok()
+                        .flatten()
+                })
+            })
+            .and_then(|r| serde_json::from_value::<BuildForm>(r.controls).ok());
+        if let Some(saved) = saved {
+            rt.sessions.get_mut(&id).unwrap().build = Some(saved);
+        }
+    }
     let body = render(
-        s,
+        &rt.sessions[&id],
         &data.0,
         data.1,
         &data.2,
@@ -482,9 +534,7 @@ async fn home(State(app): State<App>, headers: HeaderMap, Query(view): Query<Vie
     if new_cookie {
         response.headers_mut().insert(
             header::SET_COOKIE,
-            format!("promptlist_session={id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400")
-                .parse()
-                .unwrap(),
+            app.config.session_cookie(&id).parse().unwrap(),
         );
     }
     response
@@ -495,6 +545,23 @@ async fn style() -> impl IntoResponse {
         [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
         include_str!("../assets/style.css"),
     )
+}
+
+async fn theme_asset(axum::extract::Path(name): axum::extract::Path<String>) -> Response {
+    // An explicit allowlist keeps optional, locally licensed assets out of Git
+    // without exposing arbitrary files or requiring them at compile time.
+    let (file, mime) = match name.as_str() {
+        "background.jpg" => ("island-background.jpg", "image/jpeg"),
+        "satoshi-regular.woff2" => ("fonts/satoshi-regular.woff2", "font/woff2"),
+        "satoshi-medium.woff2" => ("fonts/satoshi-medium.woff2", "font/woff2"),
+        "satoshi-bold.woff2" => ("fonts/satoshi-bold.woff2", "font/woff2"),
+        "satoshi-black.woff2" => ("fonts/satoshi-black.woff2", "font/woff2"),
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    match tokio::fs::read(std::path::Path::new("assets").join(file)).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, mime)], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn browser_controller() -> impl IntoResponse {
@@ -522,6 +589,11 @@ async fn icon_asset(axum::extract::Path(name): axum::extract::Path<String>) -> R
         "arrow-up" => include_str!("../assets/arrow-up.svg"),
         "arrow-down" => include_str!("../assets/arrow-down.svg"),
         "x" => include_str!("../assets/x.svg"),
+        "play" => include_str!("../assets/play.svg"),
+        "pause" => include_str!("../assets/pause.svg"),
+        "skip-back" => include_str!("../assets/skip-back.svg"),
+        "skip-forward" => include_str!("../assets/skip-forward.svg"),
+        "volume-2" => include_str!("../assets/volume-2.svg"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     ([(header::CONTENT_TYPE, "image/svg+xml")], asset).into_response()
@@ -604,6 +676,11 @@ async fn callback(
         let profile: Profile = serde_json::from_value(api.get("/v1/me").await?)?;
         if profile.id.is_empty() || profile.account().is_empty() {
             return Err(message("Spotify did not identify the account."));
+        }
+        if !app.config.allows_user(profile.account()) {
+            return Err(message(
+                "This Spotify account is not enabled for this private beta.",
+            ));
         }
         Ok::<_, crate::Error>(Arc::new(Account { profile, api }))
     }
@@ -1158,6 +1235,30 @@ struct BuildForm {
     energy_min: String,
     #[serde(default)]
     limit: String,
+    #[serde(default)]
+    refinement: Option<crate::refinement::Refinement>,
+}
+
+#[derive(Deserialize)]
+struct RefineForm {
+    csrf: String,
+    preview_id: String,
+    prompt: String,
+}
+
+async fn refine(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Form(form): Form<RefineForm>,
+) -> Response {
+    if form.prompt.trim().is_empty() || form.prompt.len() > 2000 {
+        return error_response(message("Enter a refinement of up to 2,000 bytes."));
+    }
+    let build = BuildForm {
+        csrf: form.csrf.clone(),
+        ..Default::default()
+    };
+    start_build(app, headers, build, Some(form)).await
 }
 
 fn optional_number<T: std::str::FromStr>(value: &str) -> Result<Option<T>> {
@@ -1224,7 +1325,18 @@ fn apply_controls(
 async fn build(
     State(app): State<App>,
     headers: HeaderMap,
-    Form(form): Form<BuildForm>,
+    Form(mut form): Form<BuildForm>,
+) -> Response {
+    // Conversational state is resolved from this account's stored preview only.
+    form.refinement = None;
+    start_build(app, headers, form, None).await
+}
+
+async fn start_build(
+    app: App,
+    headers: HeaderMap,
+    mut form: BuildForm,
+    refine: Option<RefineForm>,
 ) -> Response {
     if form.prompt.len() > 2000 {
         return error_response(message("Request is too long (maximum 2,000 bytes)."));
@@ -1237,14 +1349,59 @@ async fn build(
             .account
             .clone()
             .ok_or_else(|| message("Connect Spotify first."))?;
-        if rt
+        let previous = rt
             .store
-            .get::<Preview>(account.profile.account(), "preview")?
+            .get::<Preview>(account.profile.account(), "preview")?;
+        if previous
+            .as_ref()
             .is_some_and(|p| matches!(p.phase, Phase::Creating | Phase::Created))
         {
             return Err(message(
                 "A previous Spotify save is unresolved. Finish that save before replacing the preview.",
             ));
+        }
+        if let Some(refine) = &refine {
+            let previous = previous
+                .as_ref()
+                .filter(|p| p.id == refine.preview_id)
+                .ok_or_else(|| message("This selection changed. Refine the latest preview."))?;
+            let run = previous
+                .run_id
+                .as_deref()
+                .map(|run| history::get(&rt.store.db, account.profile.account(), run))
+                .transpose()?
+                .flatten()
+                .ok_or_else(|| message("Build a new preview to begin a conversation."))?;
+            let mut saved: BuildForm = serde_json::from_value(run.controls)?;
+            let prior = run
+                .interpretation
+                .as_ref()
+                .and_then(|v| v.get("preferences"))
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_else(|| {
+                    crate::preferences::fallback(
+                        &saved.prompt,
+                        crate::intent::parse_local(&saved.prompt).ok().as_ref(),
+                    )
+                });
+            let mut recent = saved
+                .refinement
+                .take()
+                .map(|r| r.recent_messages)
+                .unwrap_or_default();
+            recent.push(refine.prompt.trim().to_owned());
+            if recent.len() > 6 {
+                recent.drain(..recent.len() - 6);
+            }
+            saved.refinement = Some(crate::refinement::Refinement {
+                parent_run: run.id,
+                prior,
+                message: refine.prompt.trim().into(),
+                recent_messages: recent,
+            });
+            saved.csrf = form.csrf.clone();
+            form = saved;
         }
         let snapshot: Snapshot = rt
             .store
@@ -1252,6 +1409,9 @@ async fn build(
             .ok_or_else(|| message("Sync your library first."))?;
         if snapshot.completed_at.is_none() || snapshot.tracks.is_empty() {
             return Err(message("Complete a nonempty library sync first."));
+        }
+        if refine.is_some() {
+            previous.as_ref().unwrap().validate(&snapshot)?;
         }
         let (id, job, account) =
             begin_job(&mut rt, &headers, &action, "Building playlist preview")?;
@@ -1261,7 +1421,11 @@ async fn build(
             created_at: now(),
             updated_at: now(),
             status: "running".into(),
-            prompt: form.prompt.clone(),
+            prompt: form
+                .refinement
+                .as_ref()
+                .map(|r| r.message.clone())
+                .unwrap_or_else(|| form.prompt.clone()),
             controls: serde_json::to_value(&form)?,
             library_count: snapshot.tracks.len(),
             snapshot_at: snapshot.completed_at,
@@ -1276,15 +1440,29 @@ async fn build(
             return Err(e);
         }
         rt.sessions.get_mut(&id).unwrap().build = Some(form.clone());
-        Ok::<_, crate::Error>((id, job, account, snapshot))
+        Ok::<_, crate::Error>((id, job, account, snapshot, previous))
     })();
-    let (id, job, account, snapshot) = match setup {
+    let (id, job, account, snapshot, previous) = match setup {
         Ok(v) => v,
         Err(e) => return error_response(e),
     };
     spawn_job(app.clone(), id.clone(), job.clone(), async move {
         let result=async {
             build_progress(&app,&id,&job,"Interpreting request".into())?;
+            if let Some(refinement)=&form.refinement
+                && let Some(count)=refinement.count_only()
+                && form.limit.trim().is_empty()
+                && let Some(previous)=&previous
+                && count<=previous.track_ids.len() {
+                let mut plan=refinement.prior.clone();plan.limit=count;
+                record_interpretation(&app,&account,&job,serde_json::json!({"mode":"refinement","engine":"local-count-v1","preferences":plan}))?;
+                let mut criteria:Vec<_>=previous.criteria.iter().filter(|s|!s.starts_with("Up to ")).cloned().collect();
+                criteria.insert(0,format!("Up to {count} tracks; previous selection order retained"));
+                let mut preview=Preview::new(previous.name.clone(),previous.track_ids.iter().take(count).cloned().collect(),criteria,vec!["Reduced the existing selection without another provider lookup. Previous matching limitations still apply.".into()],&snapshot)?;
+                preview.run_id=Some(job.clone());
+                return save_preview(&app,&id,&job,&account,&preview);
+            }
+            if form.refinement.is_some() {return build_soft_preview(&app,&id,&job,&account,&snapshot,&form,None).await;}
             let criteria=if form.prompt.trim().is_empty() {crate::selection::Criteria::default()}
             else {match crate::intent::parse_local(&form.prompt) {
                 Ok(criteria) => criteria,
@@ -1376,10 +1554,21 @@ async fn build_soft_preview(
 ) -> Result<()> {
     let mut warnings=vec!["Best-effort selection: subjective preferences are ranked, not strict requirements. Mood, lyrics and dedication suitability are not verified.".into()];
     let mut engine = "local-preferences-v1";
+    let local_plan = || {
+        form.refinement
+            .as_ref()
+            .map(|r| r.fallback())
+            .unwrap_or_else(|| crate::preferences::fallback(&form.prompt, None))
+    };
+    let prompt = form
+        .refinement
+        .as_ref()
+        .map(|r| r.model_input(&form.prompt))
+        .unwrap_or_else(|| form.prompt.clone());
     let plan = if exact.is_none() {
         if let Some(key) = app.config.openai_key.as_deref() {
             build_progress(app, id, job, "Interpreting musical preferences".into())?;
-            match crate::preferences::interpret(&app.http, key, &form.prompt).await {
+            match crate::preferences::interpret(&app.http, key, &prompt).await {
                 Ok(plan) => {
                     engine = "gpt-5.4-mini/preferences-v1";
                     plan
@@ -1388,24 +1577,27 @@ async fn build_soft_preview(
                     warnings.push(
                         "AI interpretation was unavailable; used local preference matching.".into(),
                     );
-                    crate::preferences::fallback(&form.prompt, None)
+                    local_plan()
                 }
             }
         } else {
             warnings.push("Used local preference matching; AI is not configured.".into());
-            crate::preferences::fallback(&form.prompt, None)
+            local_plan()
         }
     } else {
         warnings.push("Exact prompt matching returned no result or evidence was unavailable. Prompt constraints were relaxed to preferences; advanced filters are unchanged.".into());
         crate::preferences::fallback(&form.prompt, exact)
     };
-    let controls = apply_controls(
-        crate::selection::Criteria {
-            limit: plan.limit,
-            ..Default::default()
-        },
-        form,
-    )?;
+    let mut base = if form.refinement.is_some() {
+        crate::intent::parse_local(&form.prompt).unwrap_or_default()
+    } else {
+        crate::selection::Criteria::default()
+    };
+    base.features.clear();
+    base.genre_groups.clear();
+    base.energy_preset = None;
+    base.limit = plan.limit;
+    let controls = apply_controls(base, form)?;
     record_interpretation(
         app,
         account,
@@ -1996,6 +2188,7 @@ async fn reuse_prompt(
         let run = history::get(&rt.store.db, account.profile.account(), &form.run_id)?
             .ok_or_else(|| message("History entry not found."))?;
         let mut build: BuildForm = serde_json::from_value(run.controls)?;
+        build.refinement = None;
         build.csrf = rt.sessions[&id].csrf.clone();
         rt.sessions.get_mut(&id).unwrap().build = Some(build);
         audit_event(
@@ -2035,6 +2228,7 @@ mod tests {
         let items = Arc::new(Mutex::new(Vec::<String>::new()));
         let read_items = items.clone();
         let mock=Router::new()
+            .route("/v1/me/player/play",axum::routing::put(||async {StatusCode::NO_CONTENT}))
             .route("/v1/me/playlists",post(move |Json(body):Json<serde_json::Value>| {let c=c.clone();async move {
                 assert_eq!(body["public"],false);c.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
                 (StatusCode::CREATED,Json(json!({"id":"pppppppppppppppppppppp","public":false})))
@@ -2150,6 +2344,76 @@ mod tests {
             .await
             .unwrap()
     }
+
+    #[tokio::test]
+    async fn hosted_origin_cookies_and_anonymous_capacity_are_safe() {
+        let (mut app, _dir, server, _) = seeded_app().await;
+        let config = Arc::get_mut(&mut app.config).unwrap();
+        config.redirect = url::Url::parse("https://promptlist.example/callback").unwrap();
+        config.allowed_users = vec!["fixture".into()];
+        for (host, origin, method, path, expected) in [
+            ("promptlist.example", "", "GET", "/", StatusCode::OK),
+            ("attacker.example", "", "GET", "/", StatusCode::FORBIDDEN),
+            (
+                "promptlist.example",
+                "https://attacker.example",
+                "POST",
+                "/api/playback/token",
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "promptlist.example",
+                "https://promptlist.example",
+                "POST",
+                "/api/playback/token",
+                StatusCode::OK,
+            ),
+        ] {
+            let response = router(app.clone())
+                .oneshot(
+                    HttpRequest::builder()
+                        .method(method)
+                        .uri(path)
+                        .header("host", host)
+                        .header("origin", origin)
+                        .header("x-forwarded-host", "promptlist.example")
+                        .header("cookie", "promptlist_session=fixture")
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .body(Body::from("csrf=fixture-token"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+        for _ in 0..130 {
+            let response = router(app.clone())
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri("/")
+                        .header("host", "promptlist.example")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(
+                response.headers()[header::SET_COOKIE]
+                    .to_str()
+                    .unwrap()
+                    .contains("; Secure")
+            );
+            assert_eq!(
+                response.headers()["strict-transport-security"],
+                "max-age=31536000"
+            );
+        }
+        let rt = app.runtime.lock().unwrap();
+        assert_eq!(rt.sessions.len(), 128);
+        assert!(rt.sessions["fixture"].account.is_some());
+        server.abort();
+    }
     async fn idle(app: &App) {
         for _ in 0..3000 {
             if !app.runtime.lock().unwrap().sessions["fixture"].job.running {
@@ -2158,6 +2422,216 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("Mock job did not finish");
+    }
+
+    #[tokio::test]
+    async fn playback_is_account_preview_and_csrf_bound() {
+        let (app, _dir, server, _) = seeded_app().await;
+        let response = fixture_post(&app, "/api/playback/token", "csrf=fixture-token".into()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let body = to_bytes(response.into_body(), 10000).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(value["access_token"].is_string());
+        assert!(value.get("refresh_token").is_none());
+        assert!(
+            !fixture_post(&app, "/api/playback/token", "csrf=wrong".into())
+                .await
+                .status()
+                .is_success()
+        );
+        fixture_post(&app, "/build", "csrf=fixture-token&limit=5".into()).await;
+        idle(&app).await;
+        let preview: Preview = app
+            .runtime
+            .lock()
+            .unwrap()
+            .store
+            .get("fixture", "preview")
+            .unwrap()
+            .unwrap();
+        let body = format!(
+            "csrf=fixture-token&preview_id={}&track_id={}&device_id=browser123",
+            preview.id, preview.track_ids[1]
+        );
+        assert_eq!(
+            fixture_post(&app, "/api/playback/play", body.clone())
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        for invalid in [
+            body.replace("fixture-token", "wrong"),
+            body.replace(&preview.id, "stale"),
+            body.replace(&preview.track_ids[1], &"z".repeat(22)),
+            body.replace("browser123", "bad%26device"),
+        ] {
+            assert!(
+                !fixture_post(&app, "/api/playback/play", invalid)
+                    .await
+                    .status()
+                    .is_success()
+            );
+        }
+        app.runtime
+            .lock()
+            .unwrap()
+            .store
+            .remove("fixture", "preview")
+            .unwrap();
+        assert!(
+            !fixture_post(&app, "/api/playback/play", body)
+                .await
+                .status()
+                .is_success()
+        );
+        fixture_post(&app, "/logout", "csrf=fixture-token".into()).await;
+        assert!(
+            !fixture_post(&app, "/api/playback/token", "csrf=fixture-token".into())
+                .await
+                .status()
+                .is_success()
+        );
+        server.abort();
+    }
+    #[tokio::test]
+    async fn refinement_preserves_context_links_history_and_rejects_stale_or_forged_actions() {
+        let (app, _dir, server, created) = seeded_app().await;
+        assert_eq!(
+            fixture_post(
+                &app,
+                "/build",
+                "csrf=fixture-token&prompt=5+tracks&artist=Studio".into()
+            )
+            .await
+            .status(),
+            StatusCode::SEE_OTHER
+        );
+        idle(&app).await;
+        let original: Preview = app
+            .runtime
+            .lock()
+            .unwrap()
+            .store
+            .get("fixture", "preview")
+            .unwrap()
+            .unwrap();
+        let body = format!(
+            "csrf=fixture-token&preview_id={}&prompt=3+tracks",
+            original.id
+        );
+        assert_eq!(
+            fixture_post(&app, "/refine", body.replace("fixture-token", "wrong"))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            fixture_post(&app, "/refine", body.clone()).await.status(),
+            StatusCode::SEE_OTHER
+        );
+        idle(&app).await;
+        let reduced: Preview = app
+            .runtime
+            .lock()
+            .unwrap()
+            .store
+            .get("fixture", "preview")
+            .unwrap()
+            .unwrap();
+        assert_eq!(reduced.track_ids, original.track_ids[..3]);
+        assert_ne!(reduced.id, original.id);
+        assert_eq!(
+            fixture_post(&app, "/refine", body).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            fixture_post(
+                &app,
+                "/refine",
+                format!(
+                    "csrf=fixture-token&preview_id={}&prompt=more+energetic",
+                    reduced.id
+                )
+            )
+            .await
+            .status(),
+            StatusCode::SEE_OTHER
+        );
+        idle(&app).await;
+        {
+            let mut rt = app.runtime.lock().unwrap();
+            let current: Preview = rt.store.get("fixture", "preview").unwrap().unwrap();
+            assert_eq!(current.track_ids.len(), 3);
+            let snapshot: Snapshot = rt.store.get("fixture", "snapshot").unwrap().unwrap();
+            assert!(
+                current
+                    .track_ids
+                    .iter()
+                    .all(|id| snapshot.tracks[id].artists[0].contains("Studio"))
+            );
+            let run = history::get(&rt.store.db, "fixture", current.run_id.as_ref().unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                run.controls["refinement"]["parent_run"],
+                reduced.run_id.unwrap()
+            );
+            assert_eq!(
+                run.interpretation.as_ref().unwrap()["preferences"]["limit"],
+                3
+            );
+            assert_eq!(
+                run.interpretation.as_ref().unwrap()["preferences"]["energy_target"],
+                0.65
+            );
+            assert_eq!(history::list(&rt.store.db, "fixture", 0).unwrap().len(), 3);
+            assert!(
+                history::list(&rt.store.db, "other-account", 0)
+                    .unwrap()
+                    .is_empty()
+            );
+            let mut foreign = current.clone();
+            foreign.id = "other-account-preview".into();
+            rt.store.put("other-account", "preview", &foreign).unwrap();
+            rt.sessions.get_mut("fixture").unwrap().build = None;
+        }
+        assert_eq!(
+            fixture_post(
+                &app,
+                "/refine",
+                "csrf=fixture-token&preview_id=other-account-preview&prompt=2+tracks".into()
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let response = router(app.clone())
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/")
+                    .header("host", "127.0.0.1:8787")
+                    .header("cookie", "promptlist_session=fixture")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let rt = app.runtime.lock().unwrap();
+        assert_eq!(
+            rt.sessions["fixture"]
+                .build
+                .as_ref()
+                .unwrap()
+                .refinement
+                .as_ref()
+                .unwrap()
+                .recent_messages,
+            vec!["3 tracks", "more energetic"]
+        );
+        assert_eq!(created.load(std::sync::atomic::Ordering::SeqCst), 0);
+        server.abort();
     }
     #[tokio::test]
     async fn build_edit_confirm_save_and_duplicate_submission() {
@@ -2989,7 +3463,44 @@ mod tests {
         println!(
             "Synthetic browser fixture http://127.0.0.1:8788; cookie promptlist_session=fixture"
         );
-        axum::serve(listener, router(app)).await.unwrap();
+        let fixture = router(app)
+            .layer(axum::middleware::from_fn(
+                |request: axum::extract::Request, next: axum::middleware::Next| async move {
+                    if request.uri().path() == "/player.js" {
+                        return (
+                            [(header::CONTENT_TYPE, "text/javascript")],
+                            include_str!("../assets/player.js").replace(
+                                "https://sdk.scdn.co/spotify-player.js",
+                                "/fixture-sdk.js",
+                            ),
+                        )
+                            .into_response();
+                    }
+                    next.run(request).await
+                },
+            ))
+            .route(
+                "/fixture-sdk.js",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "text/javascript")],
+                        include_str!("../tests/spotify-sdk-fixture.js"),
+                    )
+                }),
+            )
+            .route(
+                "/fixture-login",
+                get(|| async {
+                    (
+                        [(
+                            header::SET_COOKIE,
+                            "promptlist_session=fixture; Path=/; HttpOnly; SameSite=Lax",
+                        )],
+                        Redirect::to("/"),
+                    )
+                }),
+            );
+        axum::serve(listener, fixture).await.unwrap();
     }
 
     #[tokio::test]
@@ -3038,6 +3549,41 @@ mod tests {
         let store = Store::open(dir.path()).unwrap();
         (App::new(config, store).unwrap(), dir)
     }
+    #[tokio::test]
+    async fn theme_assets_reject_unlisted_paths_and_keep_fonts_same_origin() {
+        let (app, _d) = test_app();
+        for path in ["/theme/.env.local", "/theme/style.css", "/fixture-login"] {
+            let response = router(app.clone())
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri(path)
+                        .header("host", "127.0.0.1:8787")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+        let response = router(app)
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/style.css")
+                    .header("host", "127.0.0.1:8787")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers()["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .contains("font-src 'self'")
+        );
+    }
+
     #[tokio::test]
     async fn rejects_dns_rebinding_host() {
         let (app, _d) = test_app();

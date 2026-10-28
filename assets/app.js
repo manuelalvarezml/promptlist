@@ -1,9 +1,10 @@
 // Progressive transport only. Rust owns rendering, authorization and playlist decisions.
 (() => {
   'use strict';
-  const actions = new Set(['/build', '/sync', '/coverage', '/pause', '/publish',
+  const actions = new Set(['/build', '/refine', '/sync', '/coverage', '/pause', '/publish',
     '/preview/edit', '/preview/abandon', '/history/reuse']);
   let timer, pending = false, polling = false, observedRunning = false, failures = 0, lastStatus = '';
+  let refreshVersion = 0;
   const status = () => document.querySelector('#job-status');
   const isRunning = () => status()?.dataset.running === 'true';
   function message(text) {
@@ -27,13 +28,25 @@
     const main = next.querySelector('main');
     if (!main) throw new Error('Invalid page response');
     const values = preserve ? composerValues() : [];
+    const refinementValue = preserve ? document.querySelector('.refinement-form textarea')?.value : '';
     const details = [...document.querySelectorAll('details')].map(el => el.open);
     const scrolls = [...document.querySelectorAll('.scroll-region')].map(el => el.scrollTop);
     const focused = document.activeElement;
-    const focusName = focused?.closest('.composer-form') ? focused.name : null;
+    const focusForm = focused?.closest('.refinement-form') ? '.refinement-form' : '.composer-form';
+    const focusName = focused?.closest(focusForm) ? focused.name : null;
     const selection = focused?.selectionStart;
     const y = scrollY;
     document.querySelector('main').replaceWith(main);
+    // Keep the live SDK player and its status node across server-rendered patches.
+    for (const selector of ['#radio-player', '#playback-status']) {
+      const existing = document.querySelector(selector), replacement = next.querySelector(selector);
+      if (existing && replacement) {
+        if (selector === '#radio-player') existing.dataset.connected = replacement.dataset.connected;
+        replacement.replaceWith(existing);
+      }
+    }
+    const csrf = next.querySelector('meta[name="csrf-token"]');
+    if (csrf) document.querySelector('meta[name="csrf-token"]')?.setAttribute('content', csrf.content);
     for (const selector of ['body > header', 'body > footer']) {
       const replacement = next.querySelector(selector);
       if (replacement) document.querySelector(selector)?.replaceWith(replacement);
@@ -43,20 +56,25 @@
       const el = document.querySelector('.composer-form')?.elements.namedItem(name);
       if (el) { el.value = value; if (el.type === 'checkbox') el.checked = checked; }
     }
+    const refinement = document.querySelector('.refinement-form textarea');
+    if (refinement && refinementValue) refinement.value = refinementValue;
     document.querySelectorAll('details').forEach((el, i) => { if (details[i] !== undefined) el.open = details[i]; });
     document.querySelectorAll('.scroll-region').forEach((el, i) => { el.scrollTop = scrolls[i] || 0; });
     if (focusName) {
-      const el = document.querySelector('.composer-form')?.elements.namedItem(focusName);
+      const el = document.querySelector(focusForm)?.elements.namedItem(focusName);
       if (el) { el.focus({preventScroll: true}); if (typeof selection === 'number' && el.setSelectionRange) { try { el.setSelectionRange(selection, selection); } catch {} } }
     }
     scrollTo(0, y);
     observedRunning = isRunning();
+    document.dispatchEvent(new Event('promptlist:render'));
     if (observedRunning) schedule();
   }
   async function refresh(preserve = true) {
+    const version = ++refreshVersion;
     const response = await fetch(location.pathname + location.search, {credentials: 'same-origin', cache: 'no-store'});
     if (!response.ok) throw new Error('Could not read latest state');
-    renderPage(await response.text(), preserve);
+    const text = await response.text();
+    if (version === refreshVersion) renderPage(text, preserve);
   }
   async function poll() {
     if (polling || pending) { schedule(); return; }
@@ -104,6 +122,10 @@
         return;
       }
       if (path === '/history/reuse') history.pushState(null, '', '/');
+      if (path === '/refine') {
+        const input=form.querySelector('textarea');
+        if (input && input.value === body.get('prompt')) input.value='';
+      }
       if (location.search && path !== '/history/reuse') await refresh();
       else renderPage(await response.text(), path !== '/history/reuse');
     } catch {
@@ -117,5 +139,14 @@
     }
   });
   window.addEventListener('popstate', () => { refresh().catch(() => message('Could not open this view.')); });
+  document.addEventListener('click', event => {
+    const link = event.target.closest('a[href^="/?"], a.brand');
+    if (!link || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || pending) return;
+    const url = new URL(link.href, location.href);
+    if (url.origin !== location.origin) return;
+    event.preventDefault();
+    history.pushState(null, '', url.pathname + url.search);
+    refresh(false).catch(() => message('Could not open this view. Please try again.'));
+  });
   if (isRunning()) { observedRunning = true; schedule(); }
 })();

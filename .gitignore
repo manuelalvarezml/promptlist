@@ -31,3 +31,9 @@ target/
 *.sqlite-journal
 audit-*.json
 screenshots/
+
+# Locally supplied artwork and independently obtained Fontshare assets.
+/assets/island-background.jpg
+/assets/fonts/*.woff2
+/design-qa.md
+/.deploy/

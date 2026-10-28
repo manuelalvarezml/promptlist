@@ -6,6 +6,7 @@ pub mod model;
 pub mod preferences;
 pub mod preview;
 pub mod provider;
+pub mod refinement;
 pub mod selection;
 pub mod store;
 pub mod sync;

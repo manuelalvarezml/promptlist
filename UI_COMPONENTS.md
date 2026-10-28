@@ -11,15 +11,31 @@ Do not load provider logic or the entire server module for a styling task.
 | `src/web/views.rs` | Composer, preview actions, metadata details, history and page composition |
 | `assets/style.css` | Shared tokens, control styles, layouts and responsive rules |
 | `assets/app.js` | Same-origin form transport, status polling, result patching and local UI preservation |
+| `assets/player.js` | SDK lifecycle, in-memory playback queue, state-driven radio controls |
+| `src/web/playback.rs` | Account/CSRF-bound SDK token and current-preview playback endpoints |
 | `src/web.rs` | Routes, authorization and job state; not a styling entry point |
+| `src/refinement.rs` | Prompt-only conversational state, bounded context and local refinement fallback |
 | `tests/browser-acceptance.cjs` | Synthetic workflow and responsive regression checks |
 
 ## Design Contract
 
-Graphite background, off-white type, electric lime for primary actions, ice and
-coral accents. Sans-serif body and large prompt; monospace only for small
-technical accents. Prompt is unframed. Sections are unframed or separated by
-rules, not nested cards. Real library artwork supplies the imagery.
+Island Stone theme: supplied painting fills the viewport, unchanged. A graphite
+scrim and mild desaturation start below the clear 104px header (166px on mobile).
+Satoshi Black 900 wordmark, regular/medium/bold body type. Exact sampled bone
+`#ebe5d9`, graphite `#181a19`, moss `#444d48`, water `#2a2c2b`, lichen `#aaa970`,
+limestone `#bfaf8d` and sand `#c9b495`; no cobalt or neon accents.
+Large prompt, track titles, playlist name and refinement text. All text inputs
+are transparent with minimal rules. Sections remain unframed; only real menus
+have opaque surfaces for legibility. The radio sits directly in the header.
+No slogans or promotional copy.
+The build view has only compact branding/navigation before the composer/list;
+library totals belong on other views. Completed-success progress is hidden.
+
+Reference: the Maria Norris Esparza clear-strip/filtered-photo treatment and
+Kraf Engineering's Satoshi Black typography, adapted to a compact working app.
+The reusable ten-color palette lives in the parent workspace's
+`design/palettes/island-stone/` (JSON, CSS, swatches and exact pixel provenance).
+See `assets/THEME_ASSETS.md` for local asset setup and redistribution boundaries.
 
 Keep CSS colors, typography and corner radius centralized in `:root`. Never
 scale type with viewport width or use negative letter spacing. Fixed controls
@@ -37,8 +53,9 @@ ordinary sections as cards or adding explanatory developer copy to the UI.
    This updates every caller and avoids repeated styling instructions.
 2. Add a component only for a genuinely new reusable pattern or substantial
    self-contained interaction. Keep page-specific composition in views.rs.
-3. Keep presentation in CSS and Rust markup. Browser JavaScript only transports
-   forms/status; never duplicate ranking, validation or provider decisions there.
+3. Keep presentation in CSS and Rust markup. Browser JavaScript transports
+   forms/status and integrates the Spotify SDK; never duplicate ranking or
+   server authorization decisions there.
 4. Update this map only when ownership or contracts change. Keep historical
    implementation narratives out of this short reference.
 5. Run Rust tests and the synthetic browser acceptance check. Inspect screenshots
@@ -60,3 +77,29 @@ forms still work and Check progress manually retrieves the current state.
 Never add automatic POST retries, remove CSRF/preview protections, or collect
 keystrokes as part of UI updates. New actions need explicit review before they
 join the transport allowlist.
+
+## Refinement And Player
+
+The second prompt submits `/refine` with CSRF and the current preview nonce.
+The server resolves the parent run within the connected account; it never trusts
+browser-supplied conversation state. Each refinement is a new linked history
+run. Prompt-only original request, previous structured preferences and latest
+message form the bounded AI context. Six recent messages are shown locally;
+the full chain remains in account-scoped history. Simple count reductions keep
+the current order without model/provider calls. General changes rerank the
+eligible library with the prior preferences. Explicit advanced filters remain.
+
+Player buttons use `preview_button`; `ui::player` owns one stable header radio.
+`app.js` retains its DOM node and playback status across result and view patches.
+`player.js` preconnects the SDK when authenticated, but never autoplays on login.
+Track clicks activate audio synchronously before Rust authorizes the preview queue.
+SDK state drives title, artwork, seek and play/pause; queue navigation remains
+available on other app views. The official SDK owns its hidden audio iframe.
+CSP permits SDK scripts/frames at sdk.scdn.co, not arbitrary embeds. Never scrape
+preview URLs or proxy/download audio. Keep track links to Spotify. Browser/account
+restrictions remain possible; error text is small and unboxed beside the wordmark.
+
+At 1024px+ the body is a viewport-height grid: header, minmax(0,1fr) workspace,
+30px footer. Composer, results and non-build views scroll internally. Never hide
+content without a scrollable ancestor. Below 1024px the radio gets its own header
+row and normal page scrolling returns. Check 1440/1280/1024 and 390/320 widths.

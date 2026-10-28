@@ -12,8 +12,7 @@ use tokio::sync::Mutex;
 use url::Url;
 
 pub const READ_SCOPES: &str = "user-library-read playlist-read-private playlist-read-collaborative";
-pub const SCOPES: &str =
-    "user-library-read playlist-read-private playlist-read-collaborative playlist-modify-private";
+pub const SCOPES: &str = "user-library-read playlist-read-private playlist-read-collaborative playlist-modify-private streaming user-read-email user-read-private user-modify-playback-state";
 
 pub fn random_secret() -> String {
     CsrfToken::new_random().secret().clone()
@@ -114,7 +113,7 @@ impl Tokens {
             let granted: HashSet<_> = scopes.split_whitespace().collect();
             if !SCOPES.split_whitespace().all(|s| granted.contains(s)) {
                 return Err(message(
-                    "Required library and private-playlist permissions were not granted. Reconnect to Spotify.",
+                    "Required library, private-playlist and playback permissions were not granted. Reconnect to Spotify.",
                 ));
             }
         }
@@ -215,6 +214,55 @@ impl Spotify {
 
     pub async fn get(&self, path: &str) -> Result<Value> {
         self.request(Method::GET, path, None).await
+    }
+
+    async fn refresh_token(&self, token: &mut Tokens) -> Result<()> {
+        if token.expires_at <= now() + 60 {
+            let response = self
+                .http
+                .post(&self.token_url)
+                .form(&[
+                    ("client_id", self.client_id.as_str()),
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", token.refresh.as_str()),
+                ])
+                .send()
+                .await
+                .map_err(network_error)?;
+            let body = read_json(response, "Spotify authentication").await?;
+            *token = Tokens::from_reply(serde_json::from_value(body)?, Some(&token.refresh))?;
+        }
+        Ok(())
+    }
+
+    /// Only the authenticated, CSRF-protected SDK endpoint may expose this value.
+    /// The refresh token remains server-only; neither token is persisted or logged.
+    pub async fn playback_access_token(&self) -> Result<String> {
+        let mut token = self.token.lock().await;
+        self.refresh_token(&mut token).await?;
+        Ok(token.access.clone())
+    }
+
+    pub async fn start_playback(&self, device: &str, ids: &[String]) -> Result<()> {
+        if device.is_empty()
+            || device.len() > 128
+            || !device
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            || ids.is_empty()
+            || ids.len() > 100
+            || ids.iter().any(|id| !spotify_id(id))
+        {
+            return Err(message("Invalid playback device or track selection."));
+        }
+        let uris: Vec<_> = ids.iter().map(|id| format!("spotify:track:{id}")).collect();
+        self.request(
+            Method::PUT,
+            &format!("/v1/me/player/play?device_id={device}"),
+            Some(serde_json::json!({"uris":uris,"position_ms":0})),
+        )
+        .await?;
+        Ok(())
     }
 
     /// Call only after confirmation. Persist Creating before calling and the returned
@@ -371,21 +419,7 @@ impl Spotify {
         let is_read = method == Method::GET;
         for attempt in 0..if is_read { 2 } else { 1 } {
             let mut token = self.token.lock().await;
-            if token.expires_at <= now() + 30 {
-                let response = self
-                    .http
-                    .post(&self.token_url)
-                    .form(&[
-                        ("client_id", self.client_id.as_str()),
-                        ("grant_type", "refresh_token"),
-                        ("refresh_token", token.refresh.as_str()),
-                    ])
-                    .send()
-                    .await
-                    .map_err(network_error)?;
-                let body = read_json(response, "Spotify authentication").await?;
-                *token = Tokens::from_reply(serde_json::from_value(body)?, Some(&token.refresh))?;
-            }
+            self.refresh_token(&mut token).await?;
             let mut request = self
                 .http
                 .request(method.clone(), format!("{}{path}", self.api_base))
@@ -395,7 +429,9 @@ impl Spotify {
             }
             let response = request.send()
                 .await
-                .map_err(|error| if is_read { network_error(error) } else {
+                .map_err(|error| if is_read { network_error(error) } else if path.starts_with("/v1/me/player/") {
+                    message("Playback request interrupted. Check the player before pressing play again.")
+                } else {
                     message("Spotify write outcome is unknown. Do not repeat creation; reconcile the persisted receipt before retrying.")
                 })?;
             *gate = Instant::now() + Duration::from_millis(350);
@@ -406,6 +442,12 @@ impl Spotify {
                 }
             }
             drop(token);
+            if response.status() == StatusCode::NO_CONTENT
+                && method == Method::PUT
+                && path.starts_with("/v1/me/player/")
+            {
+                return Ok(Value::Null);
+            }
             let result = read_json(response, "Spotify").await;
             match &result {
                 Err(Error::RateLimit { seconds, .. }) => {
@@ -957,6 +999,14 @@ mod tests {
         assert_eq!(q["scope"], SCOPES);
         assert!(q["scope"].contains("playlist-modify-private"));
         assert!(!q["scope"].contains("playlist-modify-public"));
+        for scope in [
+            "streaming",
+            "user-read-email",
+            "user-read-private",
+            "user-modify-playback-state",
+        ] {
+            assert!(q["scope"].split_whitespace().any(|s| s == scope));
+        }
         assert_eq!(
             q["code_challenge"],
             PkceCodeChallenge::from_code_verifier_sha256(&p.verifier).as_str()
@@ -1030,6 +1080,71 @@ mod tests {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         (base, server)
+    }
+
+    #[tokio::test]
+    async fn playback_accepts_empty_204_preserves_order_and_targets_device() {
+        use axum::{Json, Router, extract::Query, routing::put};
+        let route = Router::new().route(
+            "/v1/me/player/play",
+            put(
+                |Query(q): Query<BTreeMap<String, String>>, Json(body): Json<Value>| async move {
+                    assert_eq!(q["device_id"], "browser123");
+                    assert_eq!(
+                        body["uris"],
+                        json!([
+                            format!("spotify:track:{}", "b".repeat(22)),
+                            format!("spotify:track:{}", "a".repeat(22))
+                        ])
+                    );
+                    assert_eq!(body["position_ms"], 0);
+                    StatusCode::NO_CONTENT
+                },
+            ),
+        );
+        let (base, server) = mock(route).await;
+        let api = Spotify::fixture(base);
+        let ids = vec!["b".repeat(22), "a".repeat(22)];
+        api.start_playback("browser123", &ids).await.unwrap();
+        for device in ["", "bad&device", "../device"] {
+            assert!(api.start_playback(device, &ids).await.is_err());
+        }
+        assert!(
+            api.start_playback("browser123", &["invalid".into()])
+                .await
+                .is_err()
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn playback_errors_are_sanitized_and_never_retried() {
+        use axum::{Json, Router, routing::put};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for status in [401, 403, 404, 429, 500] {
+            let count = Arc::new(AtomicUsize::new(0));
+            let requests = count.clone();
+            let (base, server) = mock(Router::new().route(
+                "/v1/me/player/play",
+                put(move || {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        (
+                            StatusCode::from_u16(status).unwrap(),
+                            Json(json!({"error":{"message":"sensitive-provider-body"}})),
+                        )
+                    }
+                }),
+            ))
+            .await;
+            let error = Spotify::fixture(base)
+                .start_playback("browser", &["a".repeat(22)])
+                .await
+                .unwrap_err();
+            assert!(!error.to_string().contains("sensitive-provider-body"));
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            server.abort();
+        }
     }
 
     fn lastfm_fixture(base: &str) -> Enrichment {
