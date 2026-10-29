@@ -80,8 +80,8 @@ back to a solid graphite background and system typography.
 
 ## Privacy And Safety
 
-- Local mode binds only to loopback. Hosted mode uses an HTTPS AWS Lambda
-  Function URL and an explicit Spotify account allowlist; no open signup.
+- Local mode binds only to loopback. Hosted mode uses AWS Lambda with an optional
+  HTTP API custom domain and an explicit Spotify account allowlist; no open signup.
 - `.data/` contains private account-scoped SQLite snapshots, prompt/results
   history and app-action records. Do not commit or publicly upload it.
 - History remains until account deletion; action records expire after 90 days.

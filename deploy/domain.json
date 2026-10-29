@@ -1,0 +1,52 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Promptlist optional pay-per-request HTTPS custom domain. External DNS; no hosted zone fee.",
+  "Parameters": {
+    "Domain": {"Type": "String", "Default": "promptlist.lat"},
+    "CertificateArn": {"Type": "String"},
+    "FunctionName": {"Type": "String", "Default": "promptlist-api"}
+  },
+  "Resources": {
+    "HttpApi": {"Type": "AWS::ApiGatewayV2::Api", "Properties": {
+      "Name": "promptlist-domain", "ProtocolType": "HTTP", "DisableExecuteApiEndpoint": true,
+      "Tags": {"Project": "promptlist"}
+    }},
+    "Integration": {"Type": "AWS::ApiGatewayV2::Integration", "Properties": {
+      "ApiId": {"Ref": "HttpApi"}, "IntegrationType": "AWS_PROXY", "PayloadFormatVersion": "2.0",
+      "IntegrationUri": {"Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${FunctionName}"},
+      "TimeoutInMillis": 30000
+    }},
+    "Route": {"Type": "AWS::ApiGatewayV2::Route", "Properties": {
+      "ApiId": {"Ref": "HttpApi"}, "RouteKey": "$default",
+      "Target": {"Fn::Join": ["/", ["integrations", {"Ref": "Integration"}]]}
+    }},
+    "Stage": {"Type": "AWS::ApiGatewayV2::Stage", "Properties": {
+      "ApiId": {"Ref": "HttpApi"}, "StageName": "$default", "AutoDeploy": true,
+      "DefaultRouteSettings": {"DetailedMetricsEnabled": false, "ThrottlingBurstLimit": 20, "ThrottlingRateLimit": 10},
+      "Tags": {"Project": "promptlist"}
+    }},
+    "InvokePermission": {"Type": "AWS::Lambda::Permission", "Properties": {
+      "FunctionName": {"Ref": "FunctionName"}, "Action": "lambda:InvokeFunction", "Principal": "apigateway.amazonaws.com",
+      "SourceArn": {"Fn::Sub": "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*"}
+    }},
+    "Root": {"Type": "AWS::ApiGatewayV2::DomainName", "Properties": {
+      "DomainName": {"Ref": "Domain"}, "DomainNameConfigurations": [{"CertificateArn": {"Ref": "CertificateArn"}, "EndpointType": "REGIONAL", "SecurityPolicy": "TLS_1_2"}],
+      "Tags": {"Project": "promptlist"}
+    }},
+    "Www": {"Type": "AWS::ApiGatewayV2::DomainName", "Properties": {
+      "DomainName": {"Fn::Sub": "www.${Domain}"}, "DomainNameConfigurations": [{"CertificateArn": {"Ref": "CertificateArn"}, "EndpointType": "REGIONAL", "SecurityPolicy": "TLS_1_2"}],
+      "Tags": {"Project": "promptlist"}
+    }},
+    "RootMapping": {"Type": "AWS::ApiGatewayV2::ApiMapping", "Properties": {
+      "ApiId": {"Ref": "HttpApi"}, "DomainName": {"Ref": "Root"}, "Stage": {"Ref": "Stage"}
+    }},
+    "WwwMapping": {"Type": "AWS::ApiGatewayV2::ApiMapping", "Properties": {
+      "ApiId": {"Ref": "HttpApi"}, "DomainName": {"Ref": "Www"}, "Stage": {"Ref": "Stage"}
+    }}
+  },
+  "Outputs": {
+    "RootTarget": {"Value": {"Fn::GetAtt": ["Root", "RegionalDomainName"]}},
+    "WwwTarget": {"Value": {"Fn::GetAtt": ["Www", "RegionalDomainName"]}},
+    "ApiId": {"Value": {"Ref": "HttpApi"}}
+  }
+}

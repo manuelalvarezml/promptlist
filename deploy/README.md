@@ -8,7 +8,7 @@ an HTTP health response is not proof of either.
 ## Architecture
 
 - Rust HTTP Lambda, 256 MB, 30-second timeout, reserved concurrency 6, AWS HTTPS
-  Function URL. No purchased domain, proxy server or certificate management.
+  Function URL, with an optional Regional HTTP API for a custom domain.
 - Rust worker, 512 MB, 600-second timeout, reserved concurrency 1. DynamoDB
   Streams dispatch queued jobs durably. Batch size 1, three delivery retries,
   one-hour maximum stream record age and a private encrypted failure queue.
@@ -23,7 +23,7 @@ an HTTP health response is not proof of either.
 - Private SSE-S3 bucket, TLS-only access, Block Public Access, scoped IAM.
   Hosted session tokens are private/encrypted, expire after 24 hours and never
   enter analytics. Cookies are Secure/HttpOnly, responses private/no-store.
-- No VPC/NAT, EFS, RDS, load balancer, API Gateway, ECR, fixed-price host,
+- No VPC/NAT, EFS, RDS, load balancer, ECR, fixed-price host,
   provisioned concurrency or external analytics service.
 
 ## History And Behavior
@@ -102,6 +102,9 @@ as that fixture account. Linux operator containers avoid host-specific native
 network issues and mount the source database read-only. Native Rust operator
 commands are supported without `--container` where networking works.
 
+For routine production releases use `node deploy/release.cjs deploy-final`:
+it uploads the rebuilt artifact without temporarily enabling the test account.
+
 Deploy creates only dedicated Promptlist resources and records stable identities
 in ignored `.deploy/aws-release.json`. Secret-bearing CloudFormation inputs use
 0600 temporary files which are removed; parameters are NoEcho. Keys/tokens/data
@@ -119,6 +122,39 @@ Register the exact output URL plus `callback` in Spotify while preserving
 localhost. Keep Web API/Web Playback SDK enabled. Reconnect Premium and accept
 the requested scopes. Friends require both Spotify Development Mode access and
 the app account allowlist. A public HTTPS URL does not enable general signup.
+
+## Custom Domain
+
+The optional `domain.json` stack adds a Regional API Gateway HTTP API, root/www
+domain mappings and scoped Lambda invocation permission. The HTTPv2 integration
+uses the existing API function and private data; no migration or extra worker.
+The default execute-api endpoint is disabled. Stage limits are 10 requests/second
+and a burst of 20, not a billing cap.
+
+Use a non-exportable public ACM certificate in us-east-2 covering the root and
+www names. Keep its DNS-validation CNAMEs permanently for automatic renewal.
+Save domain, certificateArn and stack in ignored `.deploy/domain-state.json`.
+`node deploy/domain.cjs` verifies the AWS identity and issued certificate before
+creating the dedicated stack and saving its DNS targets. Namecheap BasicDNS can
+route the apex with an ALIAS and www with a CNAME, without a Route53 hosted zone.
+Replace only old parking/URL-routing records; preserve mail records/settings.
+
+Register `https://promptlist.lat/callback` in Spotify before cutover, preserving
+localhost. Set private release receipt `publicUrl` to `https://promptlist.lat/`
+and `redirectHosts` to the legacy Function URL hostname and `www.promptlist.lat`.
+Deploy the rebuilt binary with `deploy-final`, then apply canonical configuration
+with `finalize`. New-domain cookies require reconnecting, not another library
+sync. Approved aliases redirect GET/HEAD to the canonical root; query strings,
+OAuth codes and POST bodies are never forwarded. Unknown hosts remain rejected.
+
+HTTP API requests start around $1/million ($0.01 per 10,000), with no fixed
+monthly API/custom-domain fee. Non-exportable integrated ACM certificates have
+no extra certificate charge. Lambda, storage and transfer still apply; domain
+registration/renewal is separate from the light-use AWS budget.
+[HTTP API domains](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-custom-domain-names.html),
+[API pricing](https://aws.amazon.com/api-gateway/pricing/),
+[ACM pricing](https://aws.amazon.com/certificate-manager/pricing/),
+[Namecheap ALIAS](https://www.namecheap.com/support/knowledgebase/article.aspx/10128/2237/how-to-create-an-alias-record/).
 
 ## Recovery And Limits
 

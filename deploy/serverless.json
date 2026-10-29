@@ -27,6 +27,10 @@
     "Callback": {
       "Type": "String",
       "Default": "https://pending.invalid/callback"
+    },
+    "RedirectHosts": {
+      "Type": "String",
+      "Default": ""
     }
   },
   "Resources": {
@@ -345,6 +349,7 @@
             "SPOTIFY_REDIRECT_URI": {
               "Ref": "Callback"
             },
+            "PROMPTLIST_REDIRECT_HOSTS": {"Ref": "RedirectHosts"},
             "OPENAI_API_KEY": {
               "Ref": "OpenAIKey"
             },
@@ -407,6 +412,7 @@
             "SPOTIFY_REDIRECT_URI": {
               "Ref": "Callback"
             },
+            "PROMPTLIST_REDIRECT_HOSTS": {"Ref": "RedirectHosts"},
             "OPENAI_API_KEY": {
               "Ref": "OpenAIKey"
             },

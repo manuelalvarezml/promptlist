@@ -25,7 +25,7 @@ if(!state.bucketReady){
   call(['s3api','put-bucket-lifecycle-configuration'],{Bucket:state.releaseBucket,LifecycleConfiguration:{Rules:[{ID:'bounded-releases',Status:'Enabled',Filter:{Prefix:'releases/'},Expiration:{Days:30},AbortIncompleteMultipartUpload:{DaysAfterInitiation:1}}]}});
   state.bucketReady=true;save(state);
 }
-if(mode==='deploy'){
+if(mode==='deploy'||mode==='deploy-final'){
   const release=dir+'/promptlist-lambda.zip';
   if(!fs.existsSync(dir+'/lambda/bootstrap'))throw Error('Build the Lambda artifact first.');
   fs.copyFileSync(dir+'/lambda/bootstrap',dir+'/bootstrap');fs.chmodSync(dir+'/bootstrap',0o755);
@@ -36,11 +36,13 @@ if(mode==='deploy'){
   state.releaseKey='releases/'+digest+'.zip';state.binaryHash=crypto.createHash('sha256').update(fs.readFileSync(dir+'/lambda/bootstrap')).digest('hex');save(state);
   aws(['s3api','put-object','--bucket',state.releaseBucket,'--key',state.releaseKey,'--body',release,'--server-side-encryption','AES256']);
 }
-const parameters={ReleaseBucket:state.releaseBucket,ReleaseKey:state.releaseKey,SpotifyClientId:env.SPOTIFY_CLIENT_ID,OpenAIKey:env.OPENAI_API_KEY,LastfmKey:env.LASTFM_API_KEY,AllowedUsers:[...accounts,...(mode==='finalize'?[]:['promptlist-cloud-smoke'])].join(','),Callback:state.url?state.url+'callback':'https://pending.invalid/callback'};
+const publicUrl=state.publicUrl||state.url;
+if(publicUrl){const parsed=new URL(publicUrl);if(parsed.protocol!=='https:'||parsed.pathname!=='/'||parsed.search||parsed.hash||parsed.username||parsed.password)throw Error('Invalid canonical HTTPS URL');}
+const parameters={ReleaseBucket:state.releaseBucket,ReleaseKey:state.releaseKey,SpotifyClientId:env.SPOTIFY_CLIENT_ID,OpenAIKey:env.OPENAI_API_KEY,LastfmKey:env.LASTFM_API_KEY,AllowedUsers:[...accounts,...(['finalize','deploy-final'].includes(mode)?[]:['promptlist-cloud-smoke'])].join(','),Callback:publicUrl?publicUrl+'callback':'https://pending.invalid/callback',RedirectHosts:(state.redirectHosts||[]).join(',')};
 const input={StackName:stack,TemplateBody:fs.readFileSync('deploy/serverless.json','utf8'),Parameters:Object.entries(parameters).map(([ParameterKey,ParameterValue])=>({ParameterKey,ParameterValue})),Capabilities:['CAPABILITY_IAM'],Tags:[{Key:'Project',Value:'promptlist'}]};
 let exists=false;try{aws(['cloudformation','describe-stacks','--stack-name',stack]);exists=true;}catch(e){if(!String(e.stderr).includes('does not exist'))throw Error('Stack status unknown.');}
 try{call(['cloudformation',exists?'update-stack':'create-stack'],input);console.log('Promptlist stack '+(exists?'update':'creation')+' started.');aws(['cloudformation','wait',exists?'stack-update-complete':'stack-create-complete','--stack-name',stack]);}
 catch(e){if(!String(e.stderr).includes('No updates are to be performed')){console.error('Deployment not confirmed. Inspect this stack events; secrets were not printed.');process.exit(1);}}
 const result=JSON.parse(aws(['cloudformation','describe-stacks','--stack-name',stack])).Stacks[0];
 state.outputs=Object.fromEntries(result.Outputs.map(v=>[v.OutputKey,v.OutputValue]));state.url=state.outputs.Url;state.status=result.StackStatus;save(state);
-console.log(JSON.stringify({status:state.status,url:state.url,needsCallbackUpdate:parameters.Callback!==state.url+'callback'}));
+console.log(JSON.stringify({status:state.status,url:state.publicUrl||state.url,needsCallbackUpdate:parameters.Callback!==(state.publicUrl||state.url)+'callback'}));

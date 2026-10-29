@@ -15,6 +15,7 @@ pub struct Config {
     pub openai_model: String,
     pub data_dir: PathBuf,
     pub allowed_users: Vec<String>,
+    redirect_hosts: Vec<String>,
     listen_port: u16,
 }
 
@@ -41,6 +42,7 @@ impl Config {
             "PROMPTLIST_PORT",
             "PROMPTLIST_DATA_DIR",
             "PROMPTLIST_ALLOWED_USERS",
+            "PROMPTLIST_REDIRECT_HOSTS",
         ] {
             if let Ok(value) = std::env::var(key) {
                 values.insert(key.into(), value);
@@ -117,6 +119,33 @@ impl Config {
                 "Hosted mode requires PROMPTLIST_ALLOWED_USERS (Spotify account IDs).",
             ));
         }
+        let redirect_hosts: Vec<String> = values
+            .get("PROMPTLIST_REDIRECT_HOSTS")
+            .map(|v| {
+                v.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if redirect_hosts.len() > 8
+            || redirect_hosts.iter().any(|host| {
+                Url::parse(&format!("https://{host}/")).map_or(true, |url| {
+                    url.host_str() != Some(host.as_str())
+                        || url.port().is_some()
+                        || !url.username().is_empty()
+                        || url.password().is_some()
+                        || url.path() != "/"
+                        || url.query().is_some()
+                        || url.fragment().is_some()
+                })
+            })
+        {
+            return Err(message(
+                "PROMPTLIST_REDIRECT_HOSTS must contain plain hostnames.",
+            ));
+        }
         let listen_port = values
             .get("PROMPTLIST_PORT")
             .map(|v| v.parse::<u16>())
@@ -138,6 +167,7 @@ impl Config {
                 .unwrap_or_else(|| DEFAULT_MODEL.into()),
             data_dir,
             allowed_users,
+            redirect_hosts,
             listen_port,
         })
     }
@@ -161,6 +191,13 @@ impl Config {
     pub fn allows_user(&self, account: &str) -> bool {
         !self.hosted() || self.allowed_users.iter().any(|id| id == account)
     }
+    pub fn redirect_location(&self, host: &str, method: &str) -> Option<String> {
+        // Never forward callback codes, query strings or cross-origin POST bodies.
+        (self.hosted()
+            && matches!(method, "GET" | "HEAD")
+            && self.redirect_hosts.iter().any(|allowed| allowed == host))
+        .then(|| format!("{}/", self.origin()))
+    }
     pub fn session_cookie(&self, id: &str) -> String {
         format!(
             "promptlist_session={id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400{}",
@@ -172,6 +209,43 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn aliases_only_redirect_reads_to_the_fixed_canonical_root() {
+        let mut values = HashMap::from([
+            ("SPOTIFY_CLIENT_ID".into(), "a".repeat(32)),
+            (
+                "SPOTIFY_REDIRECT_URI".into(),
+                "https://promptlist.lat/callback".into(),
+            ),
+            ("PROMPTLIST_MODE".into(), "hosted".into()),
+            ("PROMPTLIST_ALLOWED_USERS".into(), "owner".into()),
+            (
+                "PROMPTLIST_REDIRECT_HOSTS".into(),
+                "www.promptlist.lat,old.example".into(),
+            ),
+        ]);
+        let config = Config::from_values(values.clone(), PathBuf::new()).unwrap();
+        assert_eq!(
+            config
+                .redirect_location("www.promptlist.lat", "GET")
+                .as_deref(),
+            Some("https://promptlist.lat/")
+        );
+        assert!(config.redirect_location("old.example", "HEAD").is_some());
+        assert!(config.redirect_location("old.example", "POST").is_none());
+        assert!(config.redirect_location("evil.example", "GET").is_none());
+        for invalid in [
+            "user@host.example",
+            "host.example:443",
+            "host.example/path",
+            "host.example?x=1",
+            "https://host.example",
+            "host.example#fragment",
+        ] {
+            values.insert("PROMPTLIST_REDIRECT_HOSTS".into(), invalid.into());
+            assert!(Config::from_values(values.clone(), PathBuf::new()).is_err());
+        }
+    }
     #[test]
     fn hosted_requires_https_and_an_explicit_allowlist() {
         let mut values = HashMap::from([

@@ -277,6 +277,15 @@ pub async fn handle(event: Value) -> Result<Value> {
         .as_str()
         .unwrap_or("GET");
     if headers.get(header::HOST).and_then(|v| v.to_str().ok()) != Some(config.host_header()) {
+        if let Some(location) = headers
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|host| config.redirect_location(host, method))
+        {
+            return Ok(
+                json!({"statusCode":308,"headers":{"location":location,"cache-control":"no-store","strict-transport-security":"max-age=31536000","referrer-policy":"no-referrer"},"body":""}),
+            );
+        }
         return Ok(plain(403, "Invalid host"));
     }
     if !matches!(method, "GET" | "HEAD")
