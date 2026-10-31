@@ -5,7 +5,8 @@ Turn a request into a Spotify playlist made from your own music library.
 Rust application with a floating prompt composer, live progress,
 scrollable track queues, editable previews and private Spotify export. Library
 snapshots and prompt history persist locally or in private AWS storage;
-syncing is always manual.
+connecting Spotify starts an incremental background sync. Later updates use
+**Resync library**; refreshing or changing tabs does not start another sync.
 
 Refine a selection conversationally with the second prompt field. Each turn
 retains previous preferences and creates a linked history entry. Simple count
@@ -46,10 +47,13 @@ Only prompt text and prompt-derived preferences go to OpenAI, not your library.
 cargo run --locked --bin promptlist
 ```
 
-Open [127.0.0.1:8787](http://127.0.0.1:8787), connect Spotify and sync your library.
-Build a preview, adjust the selection and export when ready. Coverage is an
-optional diagnostic, not a prerequisite. Restarting requires reconnecting;
-the completed library snapshot remains available without another sync.
+Open [127.0.0.1:8787](http://127.0.0.1:8787) and connect Spotify. Sync starts in the
+background with progress beside the wordmark. Build a preview, adjust the selection
+and export when ready. Library contains Tracks, Sources and Excluded views.
+The local-only Web/Local switch previews the clean hosted interface or enables
+metadata/evidence, coverage and aggregate diagnostics. Coverage is never required.
+Restarting locally requires reconnecting; the saved snapshot is preserved until
+a successful replacement sync completes.
 
 ## Matching
 

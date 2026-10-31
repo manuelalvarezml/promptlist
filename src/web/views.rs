@@ -155,6 +155,8 @@ pub(super) fn track_details(
 }
 
 pub(super) struct Capabilities {
+    pub(super) local: bool,
+    pub(super) diagnostics: bool,
     pub(super) lastfm: bool,
     pub(super) openai: bool,
     pub(super) history: Vec<history::Run>,
@@ -203,6 +205,14 @@ pub(super) fn render(
     capabilities: Capabilities,
 ) -> Markup {
     let connected = s.account.is_some();
+    let diagnostics = capabilities.diagnostics;
+    let sync_label = if has_draft {
+        "Resume sync"
+    } else if snapshot.completed_at.is_some() {
+        "Resync library"
+    } else {
+        "Sync library"
+    };
     let running = s.job.running;
     let account_name = s
         .account
@@ -249,7 +259,7 @@ pub(super) fn render(
             meta name="csrf-token" content=(s.csrf);
             script src="/app.js" defer {}
             script src="/player.js" defer {}
-        } body {
+        } body class=[(!connected).then_some("connection-screen")] {
             header {
                 div.brand-cluster {a.brand.wordmark href="/" {"promptlist"}
                     div.header-status id="header-status" {
@@ -258,33 +268,57 @@ pub(super) fn render(
                         span id="playback-status" role="status" aria-live="polite" {}
                     }
                 }
-                (ui::player(connected))
+                @if connected {(ui::player(true))}
                 div.account {
                 @if connected {
                     button.quiet.account-trigger popovertarget="account-menu" aria-label="Account menu" {span.dot.online {} (account_name) img src="/icons/arrow-down" alt="" width="14" height="14";}
                     div.account-popover id="account-menu" popover="auto" {
                         a href="/?tab=settings" {"Settings & privacy"}
-                        (action_form(&s.csrf,"/sync","Sync library","quiet",running))
+                        (action_form(&s.csrf,"/sync",sync_label,"quiet",running))
                         (action_form(&s.csrf,"/logout","Sign out","quiet",false))
                         a.danger href="/?tab=settings#delete-data" {"Delete local data..."}
                     }
-                } @else {(action_form(&s.csrf,"/auth/connect","Connect Spotify","quiet account-trigger",false))}
+                }
             }}
             main data-view=(view.tab) {
-                @if title!="Build a playlist" {section.heading {h1 {(title)}}}
-                (ui::navigation(title))
-                @if title!="Build a playlist" {(ui::library_stats(snapshot))}
+                @if !connected {
+                    section.connect-stage aria-label="Connect Spotify" {
+                        (action_form(&s.csrf,"/auth/connect","Connect Spotify","primary connect-button",false))
+                    }
+                } @else {
+                (ui::navigation(title,diagnostics))
+                @if s.auto_sync_pending && !running {
+                    form id="auto-sync" method="post" action="/sync" {(hidden(&s.csrf)) input type="hidden" name="consent" value="automatic"; noscript {button.primary {"Sync library"}}}
+                }
+                @if view.tab=="library" {
+                    div.library-controls {
+                        div.source-tabs aria-label="Library content" {
+                            a href="/?tab=library" aria-current=[(view.section!="sources").then_some("page")] {"Tracks"}
+                            a href="/?tab=library&section=sources" aria-current=[(view.section=="sources"&&!view.excluded).then_some("page")] {"Sources"}
+                            a href="/?tab=library&section=sources&excluded=true" aria-current=[(view.section=="sources"&&view.excluded).then_some("page")] {"Excluded"}
+                        }
+                        (action_form(&s.csrf,"/sync",sync_label,"quiet",running))
+                    }
+                    (ui::library_stats(snapshot))
+                    @if diagnostics {
+                        section.metrics.diagnostic-stats aria-label="Local diagnostics" {
+                            div {strong {(snapshot.tracks.values().filter(|t|coverage.tracks.get(&t.id).is_some_and(|e|!e.tags.is_empty()||!e.artist_tags.is_empty()||!e.features.is_empty())).count())} span {"with enrichment"}}
+                            div {strong {(snapshot.tracks.values().filter(|t|t.isrc.is_some()).count())} span {"with ISRC"}}
+                            div {strong {(snapshot.tracks.values().filter(|t|coverage.tracks.get(&t.id).is_some_and(|e|e.feature_count>0)).count())} span {"numeric matches at last lookup"}}
+                            div {strong {(snapshot.tracks.values().filter_map(|t|t.artists.first()).collect::<std::collections::HashSet<_>>().len())} span {"primary artists"}}
+                        }
+                    }
+                }
                 @if title=="Build a playlist" {
                     (composer(s,snapshot,preview))
-                } @else if !connected {
-                    p.empty-line {"No connected library"}
                 } @else if view.tab=="history" {
+                    div.toolbar {(action_form(&s.csrf,"/sync",sync_label,"quiet",running))}
                     (history_view(&capabilities.history,view.page,&s.csrf,running))
                 } @else if view.tab=="settings" {
                     section.settings-section {
                         h2 {"Music matching"}
                         p.muted {"Always active. Genre matching uses Last.fm artist names across the eligible library before numeric filtering. Track-only genre requests also send artist/title pairs. ReccoBeats receives IDs only for candidates requiring numeric checks. No account identity or playlist grouping is sent to these providers."}
-                        p.muted {"Last.fm tags use a seven-day freshness policy when response headers do not specify one; restrictive headers take precedence. ReccoBeats no-store values stay within the build. Your library snapshot stays in Promptlist's private storage until you delete it; sync runs only when requested."}
+                        p.muted {"Last.fm tags use a seven-day freshness policy when response headers do not specify one; restrictive headers take precedence. ReccoBeats no-store values stay within the build. Your library snapshot stays in Promptlist's private storage until you delete it. Connecting Spotify starts an incremental sync; Resync library checks for later changes."}
                         h2 {"History & product analytics"}
                         p.muted {"Submitted prompts, interpretations, original and edited results, and export outcomes are saved in Promptlist's private storage for your history and developer review. Detailed app actions are kept for 90 days; daily action counts, outcomes and timing summaries for 365 days. Prompt history remains until account deletion. No keystrokes, passwords, OAuth tokens or raw provider responses are recorded. No third-party analytics service is used."}
                         h2 {"Request interpretation"}
@@ -298,16 +332,13 @@ pub(super) fn render(
                         p.muted {"Signing out ends this browser session and preserves your library. Disconnecting and deleting removes this account's local library and evidence; Spotify playlists stay unchanged. Revoke Promptlist access in your Spotify account's Apps page to remove the provider authorization."}
                         details {summary.danger {"Delete local data"} form.save-form method="post" action="/delete-data" {(hidden(&s.csrf)) label.consent {input type="checkbox" name="consent" value="yes" required;span {"Delete this account's local library, evidence, previews, prompt history and activity records."}} button.danger disabled[running] {"Delete local data and disconnect"}}}
                     }
-                } @else if view.tab=="sources" {
-                    div.toolbar {h2 {(if view.excluded {"Excluded sources"} else {"Library sources"})} (action_form(&s.csrf,"/sync",if has_draft {"Resume sync"} else {"Sync library"},"primary",running))}
-                    div.source-tabs {a href="/?tab=sources" aria-current=[(!view.excluded).then_some("page")] {"All sources"} a href="/?tab=sources&excluded=true" aria-current=[view.excluded.then_some("page")] {"Excluded only"}}
-                    p.muted {"Liked Songs, owned, collaborative and saved playlists. Spotify may deny contents of playlists you only follow."}
-                    div.table-wrap {table {thead {tr {th {"Source"} th {"Items"} th {"Access"}}} tbody {@for source in snapshot.sources.iter().filter(|s|!view.excluded||!s.accessible) {tr {td {@if source.id=="liked" {"Liked Songs"} @else {a href=(format!("https://open.spotify.com/playlist/{}",source.id)) rel="noreferrer" target="_blank" {(source.name)}}} td {(source.count)} td {(source.reason.as_deref().unwrap_or("Accessible"))}}}}}
+                } @else if view.tab=="library" && view.section=="sources" {
+                    div.table-wrap tabindex="0" role="region" aria-label="Library sources" {table {thead {tr {th {"Source"} th {"Items"} @if diagnostics {th {"Library tracks"}} th {"Access"}}} tbody {@for source in snapshot.sources.iter().filter(|s|!view.excluded||!s.accessible) {tr {td {@if source.id=="liked" {"Liked Songs"} @else {a href=(format!("https://open.spotify.com/playlist/{}",source.id)) rel="noreferrer" target="_blank" {(source.name)}}} td {(source.count)} @if diagnostics {td {(snapshot.tracks.values().filter(|t|t.memberships.iter().any(|m|m.source==source.id)).count())}} td {(source.reason.as_deref().unwrap_or("Accessible"))}}}}}
                     }
                     @if snapshot.sources.is_empty() {p.empty-line {"No completed sync"}}
                     @if view.excluded && snapshot.sources.iter().all(|s|s.accessible) {p.empty-line {"No excluded sources"}}
                 } @else if view.tab=="coverage" {
-                    div.toolbar {h2 {"Feature coverage"} span.muted {(numeric) " numeric / " (tags) " tagged / " (coverage.sample.len()) " selected"}}
+                    div.toolbar {span.muted {(numeric) " numeric / " (tags) " tagged / " (coverage.sample.len()) " selected"}}
                     form.coverage-form method="post" action="/coverage" {(hidden(&s.csrf))
                         label {"Source" select name="source" {option value="" {"Entire library"} @for source in &snapshot.sources {@if source.accessible {option value=(source.id) {(source.name)}}}}}
                         label {"Scope" select name="limit" {option value="0" selected {"All tracks"} option value="20" {"20-track sample"} option value="40" {"40-track sample"} option value="100" {"100-track sample"} option value="200" {"200-track sample"}}}
@@ -322,13 +353,20 @@ pub(super) fn render(
                     div.pagination {span.muted {(coverage.sample.len()) " tracks"} @if coverage_page>0 {a href=(format!("/?tab=coverage&page={}",coverage_page-1)) {"Previous"}} @if (coverage_page+1)*50<coverage.sample.len() {a href=(format!("/?tab=coverage&page={}",coverage_page+1)) {"Next"}}}
                     p.attribution {a href="https://reccobeats.com/" target="_blank" rel="noreferrer" {"ReccoBeats"} " / " a href="https://www.last.fm/" target="_blank" rel="noreferrer" {"Last.fm"}}
                 } @else {
-                    div.toolbar {form.search method="get" action="/" {input type="hidden" name="tab" value="library";label.sr-only for="q" {"Search library"} input id="q" name="q" value=(view.q) placeholder="Track or artist" maxlength="200";button.quiet {"Search"}} div.actions {(action_form(&s.csrf,"/sync",if has_draft {"Resume sync"} else {"Sync library"},"primary",running)) @if has_draft {form method="post" action="/sync" {(hidden(&s.csrf)) input type="hidden" name="restart" value="true";button.quiet disabled[running] {"Start new sync"}}}}}
-    div.table-wrap {table.library-table {thead {tr {th {"Track / evidence"} th {"Release"} th {"Sources"} th {"Duration"}}} tbody {@for track in tracks.iter().skip(page*50).take(50) {tr {td {div.track {@if let Some(image)=&track.image {img src=(image) alt="" loading="lazy" width="40" height="40";} div {a href=(format!("https://open.spotify.com/track/{}",track.id)) target="_blank" rel="noreferrer" {(track.name)} small {(track.artists.join(", "))}}} (track_details(track,snapshot,coverage.tracks.get(&track.id)))} td data-label="Release" {(track.release_date.as_deref().unwrap_or("Unknown"))} td data-label="Sources" {(track.memberships.len())} td data-label="Duration" {(track.duration_ms.map(|ms|format!("{}:{:02}",ms/60000,(ms/1000)%60)).unwrap_or_else(||"Unknown".into()))}}}}}
+                    div.toolbar {form.search method="get" action="/" {input type="hidden" name="tab" value="library";label.sr-only for="q" {"Search library"} input id="q" name="q" value=(view.q) placeholder="Track or artist" maxlength="200";button.quiet {"Search"}} @if has_draft {form method="post" action="/sync" {(hidden(&s.csrf)) input type="hidden" name="restart" value="true";button.quiet disabled[running] {"Start new sync"}}}}
+    div.table-wrap tabindex="0" role="region" aria-label="Library tracks" {table.library-table {thead {tr {th {(if diagnostics {"Track / evidence"} else {"Track"})} th {"Release"} th {"Sources"} th {"Duration"}}} tbody {@for track in tracks.iter().skip(page*50).take(50) {tr {td {div.track {@if let Some(image)=&track.image {img src=(image) alt="" loading="lazy" width="40" height="40";} div {a href=(format!("https://open.spotify.com/track/{}",track.id)) target="_blank" rel="noreferrer" {(track.name)} small {(track.artists.join(", "))}}} @if diagnostics {(track_details(track,snapshot,coverage.tracks.get(&track.id)))}} td data-label="Release" {(track.release_date.as_deref().unwrap_or("Unknown"))} td data-label="Sources" {(track.memberships.len())} td data-label="Duration" {(track.duration_ms.map(|ms|format!("{}:{:02}",ms/60000,(ms/1000)%60)).unwrap_or_else(||"Unknown".into()))}}}}}
                     }
                     @if tracks.is_empty() {p.empty-line {(if snapshot.completed_at.is_some() {"No matching tracks"} else {"No completed library sync"})}}
                     div.pagination {span.muted {(tracks.len()) " tracks"} @if page>0 {a href=(format!("/?tab=library&page={}&q={}",page-1,url::form_urlencoded::byte_serialize(view.q.as_bytes()).collect::<String>())) {"Previous"}} @if (page+1)*50<tracks.len() {a href=(format!("/?tab=library&page={}&q={}",page+1,url::form_urlencoded::byte_serialize(view.q.as_bytes()).collect::<String>())) {"Next"}}}
                 }
             }
-            footer {span {"Promptlist / 0.2"} @if let Some(at)=snapshot.completed_at {span {"Last sync " (chrono::DateTime::from_timestamp(at,0).map(|d|d.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_default())}} a href="https://www.spotify.com/" rel="noreferrer" target="_blank" {"Music metadata by Spotify"}}
+            }
+            footer {
+                @if capabilities.local {div.ui-mode role="group" aria-label="Display mode" {
+                    a href=(format!("/?tab={}&section={}&ui=web",view.tab,view.section)) aria-current=[(!diagnostics).then_some("true")] {"Web"}
+                    a href=(format!("/?tab={}&section={}&ui=local",view.tab,view.section)) aria-current=[diagnostics.then_some("true")] {"Local"}
+                }}
+                @if connected {@if let Some(at)=snapshot.completed_at {span {"Last sync " (chrono::DateTime::from_timestamp(at,0).map(|d|d.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_default())}} a href="https://www.spotify.com/" rel="noreferrer" target="_blank" {"Music metadata by Spotify"}}
+            }
         }}}
 }

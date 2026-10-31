@@ -6,17 +6,17 @@ pub fn icon(name: &str) -> Markup {
     html! {img src=(format!("/icons/{name}")) alt="" width="16" height="16";}
 }
 
-pub fn navigation(active: &str) -> Markup {
-    html! {nav aria-label="Library views" {@for (key,label) in [("","Build a playlist"),("library","Library"),("sources","Sources"),("coverage","Coverage"),("history","History")] {
+pub fn navigation(active: &str, diagnostics: bool) -> Markup {
+    html! {nav aria-label="Library views" {@for (key,label) in [("","Build a playlist"),("library","Library"),("coverage","Coverage"),("history","History")] {@if key!="coverage" || diagnostics {
         a href=(format!("/?tab={key}")) aria-current=[(active==label).then_some("page")] {(label)}
-    }}}
+    }}}}
 }
 
 pub fn library_stats(snapshot: &Snapshot) -> Markup {
     html! {section.metrics aria-label="Library summary" {
         div {strong {(snapshot.tracks.len())} span {"tracks"}}
         div {strong {(snapshot.sources.iter().filter(|s|s.accessible).count())} span {"sources"}}
-        div {a.metric-link href="/?tab=sources&excluded=true" aria-label="Excluded sources / view" {strong {(snapshot.sources.iter().filter(|s|!s.accessible).count())} span {"excluded"}}}
+        div {a.metric-link href="/?tab=library&section=sources&excluded=true" aria-label="Excluded sources / view" {strong {(snapshot.sources.iter().filter(|s|!s.accessible).count())} span {"excluded"}}}
         div {strong {(snapshot.skipped_items)} span {"unavailable items"}}
     }}
 }

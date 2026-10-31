@@ -44,6 +44,7 @@ struct Runtime {
     last_views: HashMap<String, String>,
 }
 struct Session {
+    auto_sync_pending: bool,
     csrf: String,
     created: i64,
     pending: Option<PendingAuth>,
@@ -346,6 +347,10 @@ fn notice(app: &App, id: &str, text: String) {
 #[derive(Default, Deserialize)]
 struct View {
     #[serde(default)]
+    section: String,
+    #[serde(default)]
+    ui: String,
+    #[serde(default)]
     tab: String,
     #[serde(default)]
     q: String,
@@ -355,7 +360,32 @@ struct View {
     excluded: bool,
 }
 
-async fn home(State(app): State<App>, headers: HeaderMap, Query(view): Query<View>) -> Response {
+async fn home(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(mut view): Query<View>,
+) -> Response {
+    let local = !app.config.hosted();
+    let web_preview = view.ui == "web"
+        || (view.ui != "local"
+            && headers
+                .get(header::COOKIE)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.split(';').any(|c| c.trim() == "promptlist_ui=web")));
+    let diagnostics = local && !web_preview;
+    if view.tab == "sources" {
+        view.tab = "library".into();
+        view.section = "sources".into();
+    }
+    if view.tab == "coverage" && !diagnostics {
+        view.tab = "library".into();
+    }
+    if !matches!(
+        view.tab.as_str(),
+        "library" | "coverage" | "history" | "settings"
+    ) {
+        view.tab.clear();
+    }
     let mut rt = app.runtime.lock().unwrap();
     expire_sessions(&mut rt);
     let (id, new_cookie) = match session_id(&rt, &headers) {
@@ -386,6 +416,7 @@ async fn home(State(app): State<App>, headers: HeaderMap, Query(view): Query<Vie
             rt.sessions.insert(
                 id.clone(),
                 Session {
+                    auto_sync_pending: false,
                     csrf: provider::random_secret(),
                     created: now(),
                     pending: None,
@@ -526,6 +557,8 @@ async fn home(State(app): State<App>, headers: HeaderMap, Query(view): Query<Vie
         &view,
         preview.as_ref(),
         Capabilities {
+            local,
+            diagnostics,
             lastfm: app.enrichment.has_lastfm(),
             openai: app.config.openai_key.is_some(),
             history: history_rows,
@@ -536,6 +569,14 @@ async fn home(State(app): State<App>, headers: HeaderMap, Query(view): Query<Vie
         response.headers_mut().insert(
             header::SET_COOKIE,
             app.config.session_cookie(&id).parse().unwrap(),
+        );
+    }
+    if local && matches!(view.ui.as_str(), "web" | "local") {
+        response.headers_mut().append(
+            header::SET_COOKIE,
+            format!("promptlist_ui={}; Path=/; SameSite=Lax; HttpOnly", view.ui)
+                .parse()
+                .unwrap(),
         );
     }
     response
@@ -693,6 +734,7 @@ async fn callback(
                 && s.csrf == auth_epoch
             {
                 s.account = Some(account);
+                s.auto_sync_pending = true;
                 s.csrf = provider::random_secret();
                 s.notice = Some("Spotify connected.".into());
                 let account = s.account.as_ref().unwrap().profile.account().to_owned();
@@ -794,6 +836,16 @@ async fn start_sync(
     headers: HeaderMap,
     Form(action): Form<Action>,
 ) -> Response {
+    if action.consent.as_deref() == Some("automatic") {
+        let mut rt = app.runtime.lock().unwrap();
+        let id = match authorize(&rt, &headers, &action) {
+            Ok(id) => id,
+            Err(e) => return error_response(e),
+        };
+        if !std::mem::take(&mut rt.sessions.get_mut(&id).unwrap().auto_sync_pending) {
+            return Redirect::to("/").into_response();
+        }
+    }
     let setup = (|| {
         let mut rt = app.runtime.lock().unwrap();
         let id = authorize(&rt, &headers, &action)?;
@@ -825,6 +877,7 @@ async fn start_sync(
             ));
         }
         let (id, job, account) = begin_job(&mut rt, &headers, &action, "Starting library sync")?;
+        rt.sessions.get_mut(&id).unwrap().auto_sync_pending = false;
         if let Err(error) = rt.store.put(account.profile.account(), "draft", &draft) {
             rt.sessions.get_mut(&id).unwrap().job.running = false;
             return Err(error);
@@ -855,7 +908,9 @@ async fn start_sync(
                     return Ok(());
                 }
                 rt.store.put(account.profile.account(), "draft", &next)?;
-                rt.sessions.get_mut(&id).unwrap().job.text = next.progress();
+                let job = &mut rt.sessions.get_mut(&id).unwrap().job;
+                job.text = next.progress();
+                (job.completed, job.total) = next.progress_counts();
                 draft = next;
             }
             Err(message(
@@ -918,6 +973,9 @@ async fn start_coverage(
     headers: HeaderMap,
     Form(form): Form<CoverageForm>,
 ) -> Response {
+    if app.config.hosted() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let action = basic_action(form.csrf);
     let limit = form.limit.unwrap_or(40);
     let setup = (|| {
@@ -2317,6 +2375,7 @@ mod tests {
             "fixture".into(),
             Session {
                 csrf: "fixture-token".into(),
+                auto_sync_pending: false,
                 created: now(),
                 pending: None,
                 account: Some(Arc::new(Account {
@@ -2351,6 +2410,124 @@ mod tests {
             )
             .await
             .unwrap()
+    }
+
+    async fn fixture_html(app: &App, path: &str, connected: bool) -> String {
+        let mut request = HttpRequest::builder()
+            .uri(path)
+            .header("host", app.config.host_header());
+        if connected {
+            request = request.header("cookie", "promptlist_session=fixture");
+        }
+        let response = router(app.clone())
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        String::from_utf8(
+            to_bytes(response.into_body(), 5_000_000)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn connection_gate_and_local_web_diagnostics_are_separate() {
+        let (mut app, _dir, server, _) = seeded_app().await;
+        let html = fixture_html(&app, "/?tab=library", false).await;
+        assert!(html.contains("connect-button"));
+        assert!(!html.contains("Library views"));
+        assert!(!html.contains("id=\"radio-player\""));
+        assert!(!html.contains("id=\"prompt\""));
+        let local = fixture_html(&app, "/?tab=library", true).await;
+        assert!(local.contains("Metadata &amp; evidence"));
+        assert!(local.contains("Local diagnostics"));
+        assert!(local.contains("Resync library"));
+        assert!(!local.contains("<h1"));
+        let web = fixture_html(&app, "/?tab=library&ui=web", true).await;
+        assert!(!web.contains("track-details"));
+        assert!(!web.contains("href=\"/?tab=coverage\""));
+        let sources = fixture_html(&app, "/?tab=sources&excluded=true", true).await;
+        assert!(sources.contains("data-view=\"library\""));
+        assert!(sources.contains("Unavailable test playlist"));
+        assert!(sources.contains("Library tracks"));
+        let config = Arc::get_mut(&mut app.config).unwrap();
+        config.redirect = url::Url::parse("https://promptlist.example/callback").unwrap();
+        config.allowed_users = vec!["fixture".into()];
+        let hosted = fixture_html(&app, "/?tab=coverage&ui=local", true).await;
+        assert!(hosted.contains("data-view=\"library\""));
+        assert!(!hosted.contains("track-details"));
+        assert!(!hosted.contains("Display mode"));
+        let result = start_coverage(
+            State(app),
+            HeaderMap::new(),
+            Form(CoverageForm {
+                csrf: "unused".into(),
+                limit: None,
+                source: String::new(),
+                tags: None,
+            }),
+        )
+        .await;
+        assert_eq!(result.status(), StatusCode::NOT_FOUND);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn automatic_sync_is_one_shot_and_failure_keeps_saved_library() {
+        let (app, _dir, server, _) = seeded_app().await;
+        app.runtime
+            .lock()
+            .unwrap()
+            .sessions
+            .get_mut("fixture")
+            .unwrap()
+            .auto_sync_pending = true;
+        assert!(
+            fixture_html(&app, "/", true)
+                .await
+                .contains("id=\"auto-sync\"")
+        );
+        let body = "csrf=fixture-token&consent=automatic".to_owned();
+        assert_eq!(
+            fixture_post(&app, "/sync", body.clone()).await.status(),
+            StatusCode::SEE_OTHER
+        );
+        let first = app.runtime.lock().unwrap().sessions["fixture"]
+            .job
+            .id
+            .clone();
+        assert!(!first.is_empty());
+        assert_eq!(
+            fixture_post(&app, "/sync", body).await.status(),
+            StatusCode::SEE_OTHER
+        );
+        assert_eq!(
+            app.runtime.lock().unwrap().sessions["fixture"].job.id,
+            first
+        );
+        assert!(!app.runtime.lock().unwrap().sessions["fixture"].auto_sync_pending);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            app.runtime
+                .lock()
+                .unwrap()
+                .store
+                .get::<Snapshot>("fixture", "snapshot")
+                .unwrap()
+                .unwrap()
+                .tracks
+                .len(),
+            12
+        );
+        assert!(
+            !fixture_html(&app, "/", true)
+                .await
+                .contains("id=\"auto-sync\"")
+        );
+        server.abort();
     }
 
     #[tokio::test]
@@ -3735,6 +3912,7 @@ mod tests {
             "session".into(),
             Session {
                 csrf: "right".into(),
+                auto_sync_pending: false,
                 created: now(),
                 pending: None,
                 account: None,
@@ -3766,6 +3944,7 @@ mod tests {
             "session".into(),
             Session {
                 csrf: "form-token".into(),
+                auto_sync_pending: false,
                 created: now(),
                 pending: Some(pending),
                 account: None,

@@ -164,7 +164,10 @@ registration/renewal is separate from the light-use AWS budget.
 - Inspect the dedicated failure queue and sanitized project logs after failures.
   An active account lease expires after 45 seconds (HTTP) or 650 seconds (worker).
 - Source edits require rebuild/deploy. Do not rerun import to update production.
-  Manual Spotify sync reconciles the library; sign-in does not resync it.
+  Successful Spotify connection schedules one incremental background sync;
+  ordinary page loads do not. Resync library explicitly reconciles later changes.
+  Hosted Coverage requests return 404; diagnostic metadata and the local UI switch
+  are omitted. Existing snapshots survive unsuccessful syncs.
 - Roll back code by using a previously recorded release key in the private
   receipt, then `configure` and `finalize`. Never overwrite current user data
   from an old local database as part of code rollback.

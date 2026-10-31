@@ -5,6 +5,14 @@
     '/preview/edit', '/preview/abandon', '/history/reuse']);
   let timer, pending = false, polling = false, observedRunning = false, failures = 0, lastStatus = '';
   let refreshVersion = 0;
+  let autoSyncAttempted = false;
+  function autoSync() {
+    const form = document.querySelector('#auto-sync');
+    if (form && !autoSyncAttempted && !pending && !isRunning()) {
+      autoSyncAttempted = true;
+      form.requestSubmit();
+    }
+  }
   const status = () => document.querySelector('#job-status');
   const isRunning = () => status()?.dataset.running === 'true';
   function message(text) {
@@ -37,6 +45,7 @@
     const selection = focused?.selectionStart;
     const y = scrollY;
     document.querySelector('main').replaceWith(main);
+    document.body.className = next.body.className;
     // Keep the live SDK player and its status node across server-rendered patches.
     for (const selector of ['#radio-player', '#playback-status']) {
       const existing = document.querySelector(selector), replacement = next.querySelector(selector);
@@ -68,6 +77,7 @@
     observedRunning = isRunning();
     document.dispatchEvent(new Event('promptlist:render'));
     if (observedRunning) schedule();
+    else autoSync();
   }
   async function refresh(preserve = true) {
     const version = ++refreshVersion;
@@ -149,4 +159,5 @@
     refresh(false).catch(() => message('Could not open this view. Please try again.'));
   });
   if (isRunning()) { observedRunning = true; schedule(); }
+  else autoSync();
 })();

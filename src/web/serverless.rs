@@ -9,6 +9,8 @@ use tower::ServiceExt;
 
 #[derive(Serialize, Deserialize)]
 struct SavedSession {
+    #[serde(default)]
+    auto_sync_pending: bool,
     csrf: String,
     created: i64,
     pending: Option<SavedPending>,
@@ -111,6 +113,7 @@ async fn restore_session(app: &App, sid: &str, saved: SavedSession) {
     app.runtime.lock().unwrap().sessions.insert(
         sid.into(),
         Session {
+            auto_sync_pending: saved.auto_sync_pending,
             csrf: saved.csrf,
             created: saved.created,
             pending,
@@ -131,6 +134,7 @@ async fn save_session(app: &App, aws: &Aws, sid: &str, generation: Option<String
         };
         (
             SavedSession {
+                auto_sync_pending: s.auto_sync_pending,
                 csrf: s.csrf.clone(),
                 created: s.created,
                 pending: s.pending.as_ref().map(|p| SavedPending {
@@ -273,6 +277,9 @@ pub async fn handle(event: Value) -> Result<Value> {
     let config = config()?;
     let headers = headers(&event);
     let path = event["rawPath"].as_str().unwrap_or("/");
+    if path == "/coverage" {
+        return Ok(plain(404, "Not found"));
+    }
     let method = event["requestContext"]["http"]["method"]
         .as_str()
         .unwrap_or("GET");
@@ -476,6 +483,17 @@ pub async fn handle(event: Value) -> Result<Value> {
             "/build" | "/refine" | "/sync" | "/coverage" | "/publish"
         );
     if queued {
+        if path == "/sync"
+            && url::form_urlencoded::parse(body.as_bytes())
+                .any(|(k, v)| k == "consent" && v == "automatic")
+            && !sid
+                .as_ref()
+                .is_some_and(|id| app.runtime.lock().unwrap().sessions[id].auto_sync_pending)
+        {
+            return Ok(
+                json!({"statusCode":303,"headers":{"location":"/","cache-control":"no-store"},"body":""}),
+            );
+        }
         if account.is_none() {
             return Ok(plain(401, "Connect Spotify first."));
         }

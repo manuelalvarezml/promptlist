@@ -86,6 +86,17 @@ impl Draft {
         }
     }
 
+    pub fn progress_counts(&self) -> (Option<usize>, Option<usize>) {
+        match self.stage {
+            Stage::Liked | Stage::Inventory => (self.total.map(|n| self.offset.min(n)), self.total),
+            Stage::Playlists => (
+                Some(self.playlist_index.saturating_sub(1)),
+                Some(self.snapshot.sources.len().saturating_sub(1)),
+            ),
+            Stage::Finished => (Some(1), Some(1)),
+        }
+    }
+
     pub async fn advance(&mut self, spotify: &Spotify) -> Result<()> {
         if now() - self.started_at > 3600 {
             return Err(message(

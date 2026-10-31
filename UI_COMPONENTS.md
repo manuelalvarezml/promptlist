@@ -16,6 +16,7 @@ Do not load provider logic or the entire server module for a styling task.
 | `src/web.rs` | Routes, authorization and job state; not a styling entry point |
 | `src/refinement.rs` | Prompt-only conversational state, bounded context and local refinement fallback |
 | `tests/browser-acceptance.cjs` | Synthetic workflow and responsive regression checks |
+| `tests/flow-acceptance.cjs` | Connection gate, merged Library, local/web mode and auto-sync transport checks |
 
 ## Design Contract
 
@@ -29,7 +30,18 @@ are transparent with minimal rules. Sections remain unframed; only real menus
 have opaque surfaces for legibility. The radio sits directly in the header.
 No slogans or promotional copy.
 The build view has only compact branding/navigation before the composer/list;
-library totals belong on other views. Completed-success progress is hidden.
+library totals belong on Library. Completed-success progress is hidden.
+
+Disconnected users see only the wordmark, necessary status and a centered Connect
+Spotify action over the painting. Connected views share one stable tab row with
+no duplicate page heading. Library owns Tracks/Sources/Excluded subviews and fills
+the remaining desktop height. Textareas cannot be manually resized.
+
+Only local runtime exposes the bottom-corner Web/Local switch. Its cookie affects
+presentation, never authentication. Web mode hides evidence, diagnostics and
+Coverage; hosted configuration enforces this regardless of query/cookie values
+and rejects the Coverage route. Local counts distinguish current enrichment from
+historical numeric matches; source counts show actual unique snapshot memberships.
 
 Reference: the Maria Norris Esparza clear-strip/filtered-photo treatment and
 Kraf Engineering's Satoshi Black typography, adapted to a compact working app.
@@ -73,6 +85,13 @@ each action once, patches status while running and patches the result after
 completion. Composer values, focus/caret and scrolling are preserved. OAuth,
 sign-out and deletion retain native form navigation. With JavaScript disabled,
 forms still work and Check progress manually retrieves the current state.
+
+A successful OAuth connection persists a one-shot auto-sync marker. The rendered
+auto-sync form is submitted once using existing CSRF/job transport. The server
+consumes the marker; page refreshes, polling and duplicate requests do not launch
+another completed sync. Jobs retain account locks, durable checkpoints and atomic
+snapshot promotion. Header progress shows measured per-stage work, or indeterminate
+progress when the provider total is unknown. Without JavaScript, use Sync library.
 
 Never add automatic POST retries, remove CSRF/preview protections, or collect
 keystrokes as part of UI updates. New actions need explicit review before they
