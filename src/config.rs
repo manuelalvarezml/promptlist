@@ -6,6 +6,7 @@ use std::{
 use url::Url;
 
 pub const DEFAULT_MODEL: &str = "gpt-6.1-sol";
+pub const SESSION_SECONDS: i64 = 90 * 86400;
 
 pub struct Config {
     pub client_id: String,
@@ -200,7 +201,8 @@ impl Config {
     }
     pub fn session_cookie(&self, id: &str) -> String {
         format!(
-            "promptlist_session={id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400{}",
+            "promptlist_session={id}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}",
+            SESSION_SECONDS,
             if self.hosted() { "; Secure" } else { "" }
         )
     }

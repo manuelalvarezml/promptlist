@@ -27,10 +27,7 @@ pub(super) fn edit_button(
 
 pub(super) fn composer(s: &Session, snapshot: &Snapshot, preview: Option<&Preview>) -> Markup {
     let unavailable = s.account.is_none() || s.job.running || snapshot.tracks.is_empty();
-    let form = s.build.clone().unwrap_or_else(|| BuildForm {
-        name: "Promptlist selection".into(),
-        ..Default::default()
-    });
+    let form = s.build.clone().unwrap_or_default();
     html! {
         div.build-layout {
             section.composer {
@@ -38,7 +35,6 @@ pub(super) fn composer(s: &Session, snapshot: &Snapshot, preview: Option<&Previe
                     label.sr-only for="prompt" {"Playlist prompt"}
                     textarea.floating-prompt id="prompt" name="prompt" rows="4" maxlength="2000" placeholder="Describe your playlist" {(form.prompt)}
                     div.composer-actions {
-                        label.field {"Playlist name" input name="name" maxlength="100" value=(form.name);}
                         button.primary.build-button type="submit" disabled[unavailable] {"Build preview" span.forward-icon {(ui::icon("arrow-up"))}}
                     }
                     details.advanced-config {
@@ -77,12 +73,11 @@ pub(super) fn composer(s: &Session, snapshot: &Snapshot, preview: Option<&Previe
             section.preview id="selection" data-preview-id=(preview.map(|p|p.id.as_str()).unwrap_or("")) {
                 div.preview-header {h2 {"Your mix"} span.result-count {(preview.map(|p|p.track_ids.len()).unwrap_or(0)) " tracks"}}
                 @if let Some(p)=preview {
-                    h3 {(p.name)}
                     @if p.warnings.iter().any(|w|w.starts_with("Best-effort selection:")) {p.muted {"Best-effort selection: closest available matches; some preferences are approximate."}}
                     details.criteria-summary {summary {"Selection criteria & matching details"} ul {@for line in &p.criteria {li {(line)}}} @for warning in &p.warnings {p.muted {(warning)}}}
                     @if p.track_ids.is_empty() {p.result-empty {"No matches for these criteria"}}
                     (ui::scroll_region("Playlist tracks",html!{ol.track-list {@for (index,id) in p.track_ids.iter().enumerate() {@if let Some(track)=snapshot.tracks.get(id) {
-                        li.track-row {
+                        li.track-row data-track-id=(id) {
                             span.track-number {(format!("{:02}",index+1))}
                             @if let Some(image)=&track.image {img.cover src=(image) alt="" loading="lazy" width="40" height="40";}
                             div.track-info {a href=(format!("https://open.spotify.com/track/{id}")) rel="noreferrer" target="_blank" {(track.name)} small {(track.artists.join(", "))}}
@@ -101,6 +96,7 @@ pub(super) fn composer(s: &Session, snapshot: &Snapshot, preview: Option<&Previe
                         p.notice {"Save started. If interrupted, check Spotify before another creation attempt."}
                     } @else {
                         form.save-form method="post" action="/publish" {(hidden(&s.csrf)) input type="hidden" name="preview_id" value=(p.id);
+                            label.field.playlist-name {"Playlist name" input name="name" maxlength="100" value=(p.name) readonly[p.phase!=Phase::Draft];}
                             button.primary disabled[s.job.running||p.track_ids.is_empty()] {(if p.phase==Phase::Created {"Resume export"} else {"Export to Spotify"})}
                         }
                     }
@@ -155,6 +151,7 @@ pub(super) fn track_details(
 }
 
 pub(super) struct Capabilities {
+    pub(super) analytics: bool,
     pub(super) local: bool,
     pub(super) diagnostics: bool,
     pub(super) lastfm: bool,
@@ -284,6 +281,7 @@ pub(super) fn render(
                 @if !connected {
                     section.connect-stage aria-label="Connect Spotify" {
                         (action_form(&s.csrf,"/auth/connect","Connect Spotify","primary connect-button",false))
+                        a class="privacy-link" href="/privacy" {"Privacy & cookies"}
                     }
                 } @else {
                 (ui::navigation(title,diagnostics))
@@ -318,9 +316,13 @@ pub(super) fn render(
                     section.settings-section {
                         h2 {"Music matching"}
                         p.muted {"Always active. Genre matching uses Last.fm artist names across the eligible library before numeric filtering. Track-only genre requests also send artist/title pairs. ReccoBeats receives IDs only for candidates requiring numeric checks. No account identity or playlist grouping is sent to these providers."}
-                        p.muted {"Last.fm tags use a seven-day freshness policy when response headers do not specify one; restrictive headers take precedence. ReccoBeats no-store values stay within the build. Your library snapshot stays in Promptlist's private storage until you delete it. Connecting Spotify starts an incremental sync; Resync library checks for later changes."}
+                        p.muted {"Last.fm tags use a seven-day freshness policy when response headers do not specify one; restrictive headers take precedence. ReccoBeats no-store values stay within the build. Libraries and permitted evidence stay in private storage until deletion. Your saved library opens immediately on returning devices; Resync library checks for changes. Only first-time libraries sync automatically."}
                         h2 {"History & product analytics"}
-                        p.muted {"Submitted prompts, interpretations, original and edited results, and export outcomes are saved in Promptlist's private storage for your history and developer review. Detailed app actions are kept for 90 days; daily action counts, outcomes and timing summaries for 365 days. Prompt history remains until account deletion. No keystrokes, passwords, OAuth tokens or raw provider responses are recorded. No third-party analytics service is used."}
+                        form method="post" action="/privacy" {(hidden(&s.csrf)) label.consent {input type="checkbox" name="analytics" value="yes" checked[capabilities.analytics];span {"Share optional navigation and player-action counts to improve Promptlist."}} button.quiet {"Save privacy preferences"}}
+                        p.muted {"Login dates, a random device record and coarse browser/platform labels support account security. No device fingerprint, raw user-agent, IP address or advertising audience is stored by the application. Optional analytics are off unless enabled above. No advertising cookies or pixels are installed."}
+                        h2 {"Cookies & sign-in"}
+                        p.muted {"A secure HttpOnly first-party cookie keeps each hosted browser signed in for up to 90 days. Spotify tokens stay encrypted at rest on AWS, never in browser storage. Clearing cookies, signing out or revoked authorization may require reconnecting. Sign out affects this device; deleting your account invalidates all devices. Local development sessions end when its server restarts. The local display preference cookie only remembers Web/Local mode."}
+                        p.muted {"Submitted prompts, interpretations, results and export outcomes are saved for your history and support. Operational records and permitted optional actions are kept for 90 days; daily counts and timings for 365 days. Prompt history stays until account deletion. Tokens are excluded from these records. No keystrokes or raw provider responses are logged. Music data and prompts are not advertising profiles."}
                         h2 {"Request interpretation"}
                         p.muted {"Developer exports are separate private files and must be deleted separately. Result lists and activity logs are never sent to AI. No model training is enabled."}
                         p.muted {(if capabilities.openai {"Requests use local parsing first, then the configured OpenAI model to interpret subjective preferences. Refinements send your original request, previous preference interpretation and latest message, not your library or result tracks. If AI or provider evidence is unavailable, matching uses a disclosed best-effort local fallback. Do not put private account details in a prompt."} else {"Local request and preference parsing is active. OpenAI is not configured."})}

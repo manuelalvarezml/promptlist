@@ -36,7 +36,8 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; isolation: isolate; min-height: 100dvh; }
+html { overscroll-behavior: none; background:var(--graphite); }
+body { margin: 0; isolation: isolate; min-height: 100dvh; overscroll-behavior: none; }
 body::before, body::after { content: ''; position: fixed; inset: 0; pointer-events: none; }
 body::before { z-index: -2; background: var(--graphite) url('/theme/background.jpg') center / cover no-repeat; }
 /* Only the workspace is filtered. The painting remains untouched beneath it. */
@@ -129,7 +130,7 @@ body > header {
   justify-content: space-between;
   gap: 20px;
   padding: 12px 28px;
-  background: var(--bone) url('/theme/background.jpg') center / cover fixed;
+  background: transparent;
   color: var(--graphite);
   border-top: 0;
   border-bottom: 1px solid var(--line-dark);
@@ -238,7 +239,7 @@ nav a[aria-current="page"], nav a[aria-current="true"] { color: var(--ink); bord
 /* FloatingPrompt: one typography/control contract at every breakpoint. */
 textarea.floating-prompt { min-height: 180px; height: 220px; max-height: 400px; padding: 0 8px 0 0; font-size: 44px; line-height: 1.15; font-weight: 450; background: transparent; border: 0; border-radius: 0; box-shadow: none; overflow-wrap: anywhere; }
 textarea.floating-prompt::placeholder { color: var(--bone); }
-textarea.floating-prompt:focus-visible { outline: 0; box-shadow: -2px 0 var(--accent); }
+textarea.floating-prompt:focus-visible, .refinement-form textarea:focus-visible { outline: 0; box-shadow: none; }
 .composer-actions { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: 20px; }
 .composer-form .composer-actions label.field input { background: transparent; border-width: 0 0 1px; border-radius: 0; padding-left: 0; font-size: 24px; }
 .build-button { min-height: 52px; }
@@ -405,8 +406,15 @@ progress:indeterminate { opacity: .7; animation: breathe 1.5s ease-in-out infini
 .connection-screen::after { top:0; background:rgb(24 26 25 / 35%); }
 .connection-screen .header-status { color:var(--bone); }
 .connection-screen main { display:grid !important; place-items:center; overflow:auto !important; }
-.connect-stage { display:flex; justify-content:center; align-items:center; min-height:55dvh; width:100%; }
-.connect-button { font-size:28px; padding:24px 40px; min-height:88px; border-radius:4px; }
+.connect-stage { display:flex; flex-direction:column; gap:24px; justify-content:center; align-items:center; min-height:55dvh; width:100%; }
+.privacy-link { font-size:14px; color:var(--bone); }
+.privacy-notice { max-width:800px; padding:32px 24px; margin:auto; }
+.privacy-notice p { line-height:1.6; }
+body:has(.privacy-notice) { height:auto; overflow:auto; }
+.connect-button.primary { font-size:28px; padding:24px 40px; min-height:88px; border-radius:4px; background:rgb(24 26 25 / 28%); color:var(--bone); border:1px solid rgb(235 229 217 / 65%); backdrop-filter:blur(8px); }
+.connect-button.primary:hover { background:rgb(24 26 25 / 52%); }
+.save-form { display:flex; flex-direction:column; align-items:stretch; }
+.playlist-name input { font-size:26px; }
 .connection-screen > footer { border:0; }
 #auto-sync { display:contents; }
 @media (min-width: 1024px) {
@@ -457,17 +465,22 @@ progress:indeterminate { opacity: .7; animation: breathe 1.5s ease-in-out infini
 }
 
 @media (max-width: 1023px) {
-  :root { --header-height: 166px; }
-  body > header { grid-template-columns: minmax(0,1fr) auto; grid-template-rows: 58px 76px; padding: 10px 20px; gap: 6px 12px; }
+  :root { --header-height: 96px; }
+  body { height:100svh; overflow:hidden; display:flex; flex-direction:column; }
+  body > header { flex-shrink:0; position:relative; grid-template-columns: minmax(0,1fr) auto; grid-template-rows: 1fr; padding: 10px 20px; gap: 6px 12px; }
+  main[data-view] { flex:1; min-height:0; overflow:auto; padding-bottom:20px; overscroll-behavior:contain; }
+  body > footer { flex-shrink:0; }
+  body:has(.radio-player) > footer { padding-bottom:calc(116px + env(safe-area-inset-bottom)); }
+  body:has(.radio-player) > footer > :not(.ui-mode) { display:none; }
   .brand-cluster { grid-column: 1; }
   .account { grid-column: 2; grid-row: 1; }
-  .radio-player { grid-column: 1 / -1; grid-row: 2; max-width: 620px; justify-self: center; }
+  .radio-player { position:fixed; left:0; right:0; bottom:0; z-index:30; width:100%; max-width:none; padding:12px 16px calc(8px + env(safe-area-inset-bottom)); background:var(--bone); color:var(--graphite); border-top:1px solid var(--line-dark); }
   .header-status { font-size: 10px; max-height: 48px; }
   .account-popover { top: 64px; }
 }
 
 @media (max-width: 640px) {
-  :root { --header-height: 166px; }
+  :root { --header-height: 96px; }
   .composer-actions { grid-template-columns: minmax(0,1fr); }
   body > header { align-items: center; gap: 6px 8px; padding: 10px 16px; }
   .brand.wordmark { font-size: 28px; }

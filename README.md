@@ -5,13 +5,15 @@ Turn a request into a Spotify playlist made from your own music library.
 Rust application with a floating prompt composer, live progress,
 scrollable track queues, editable previews and private Spotify export. Library
 snapshots and prompt history persist locally or in private AWS storage;
-connecting Spotify starts an incremental background sync. Later updates use
+connecting Spotify restores the saved library, or starts a first sync if none exists. Later updates use
 **Resync library**; refreshing or changing tabs does not start another sync.
 
 Refine a selection conversationally with the second prompt field. Each turn
 retains previous preferences and creates a linked history entry. Simple count
 reductions preserve the current order without another lookup. Play buttons
-start the account-linked Spotify player in the page header.
+start the account-linked Spotify player in the desktop header or mobile bottom bar.
+Track removals appear immediately and persist in short batches; export waits for
+confirmation. Generated names prefer two words and are editable above Export.
 
 ## Run Locally
 
@@ -47,8 +49,8 @@ Only prompt text and prompt-derived preferences go to OpenAI, not your library.
 cargo run --locked --bin promptlist
 ```
 
-Open [127.0.0.1:8787](http://127.0.0.1:8787) and connect Spotify. Sync starts in the
-background with progress beside the wordmark. Build a preview, adjust the selection
+Open [127.0.0.1:8787](http://127.0.0.1:8787) and connect Spotify. An existing library
+loads without resync; first sync shows progress beside the wordmark. Build a preview, adjust the selection
 and export when ready. Library contains Tracks, Sources and Excluded views.
 The local-only Web/Local switch previews the clean hosted interface or enables
 metadata/evidence, coverage and aggregate diagnostics. Coverage is never required.
@@ -100,7 +102,7 @@ back to a solid graphite background and system typography.
   Last.fm receives artist/title lookups; ReccoBeats receives candidate track IDs.
 - Provider cache directives are honored. No-store numeric features are transient.
 - Local tokens remain in memory. Hosted sessions and server-only tokens persist
-  in private encrypted DynamoDB with a 24-hour expiry. The playback SDK receives the short-lived access token
+  in private encrypted DynamoDB for up to 90 days per device. The playback SDK receives the short-lived access token
   through an authenticated, same-origin, CSRF-protected, no-store endpoint.
   Refresh tokens stay server-only; no token is stored in browser storage.
   Signing out retains saved state; confirmed hosted account-data deletion
@@ -110,6 +112,10 @@ back to a solid graphite background and system typography.
   Spotify exports. The browser never automatically retries a write.
 - The SDK connects when signed in but audio starts only on a playback action.
   Promptlist never proxies, downloads or analyzes Spotify audio.
+- Login records contain timestamps and coarse device/browser labels, not raw
+  user-agent or IP. Optional navigation/playback analytics default off in Settings.
+  No advertising cookies, pixels or audience uploads. See the public `/privacy`
+  notice and [research and retention decisions](PERSISTENCE_AND_PRIVACY.md).
 
 ## Spotify Playback
 
@@ -161,6 +167,12 @@ data only, including a fixture-only SDK simulator with no Spotify audio/network.
 They cover progress without navigation, export, history, edits, player controls,
 scrolling and desktop/mobile layout. Simulator checks are not real DRM/autoplay
 or Premium account acceptance.
+
+Also run `tests/flow-acceptance.cjs` and `tests/mobile-persistence.cjs`. Run suites
+sequentially against freshly restarted fixtures, never concurrently against the
+same account: they intentionally mutate synthetic previews/session state. The
+mobile suite covers cookie lifetime, responsive radio/background, batched edits,
+failure reconciliation and suspended-page recovery, not physical-iPhone behavior.
 
 Local use requires no AWS resources or other music projects. The
 [hosting guide](deploy/README.md) covers the isolated pay-per-use Lambda release,

@@ -11,6 +11,8 @@ use std::{collections::BTreeMap, time::Duration};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Preferences {
+    #[serde(default)]
+    pub playlist_name: String,
     pub limit: usize,
     pub description: String,
     pub tag_groups: Vec<Vec<String>>,
@@ -25,9 +27,10 @@ pub fn request_body(prompt: &str) -> Value {
         "input":prompt,
         "text":{"format":{"type":"json_schema","name":"playlist_preferences","strict":true,"schema":{
             "type":"object","additionalProperties":false,"properties":{
+                "playlist_name":{"type":"string","description":"An evocative playlist title based only on the request. Prefer two words, one if natural, at most four. No quotes or generic Playlist suffix."},
                 "limit":{"type":"integer","minimum":1,"maximum":100,"description":"Requested track count, otherwise 30"},"description":{"type":"string"},"tag_groups":{"type":"array","maxItems":6,"items":{"type":"array","maxItems":8,"items":{"type":"string"}}},
                 "energy_target":{"type":["number","null"]},"title_terms":{"type":"array","maxItems":8,"items":{"type":"string"}},"caveats":{"type":"array","maxItems":6,"items":{"type":"string"}}
-            },"required":["limit","description","tag_groups","energy_target","title_terms","caveats"]}}}});
+            },"required":["playlist_name","limit","description","tag_groups","energy_target","title_terms","caveats"]}}}});
     let instructions = body["instructions"].as_str().unwrap().to_owned();
     body["instructions"] = json!(format!(
         "{instructions} If the input is a refinement object, preserve previous_preferences unless latest_refinement changes them. Newer instructions override conflicting earlier intent. Relative changes such as more or less energy adjust the previous target, not a fresh default. Return the complete updated preferences, not just the delta. The original_request is background, not an instruction to undo earlier refinements. If references to particular results cannot be resolved without library data, disclose that limitation; never invent the referenced track."
@@ -72,6 +75,9 @@ pub fn parse_response(body: &Value) -> Result<Preferences> {
         !s.trim().is_empty() && s.len() <= max && !s.chars().any(char::is_control)
     };
     if !(1..=100).contains(&plan.limit)
+        || plan.playlist_name.chars().count() > 100
+        || plan.playlist_name.split_whitespace().count() > 4
+        || plan.playlist_name.chars().any(char::is_control)
         || !short(&plan.description, 600)
         || plan.tag_groups.len() > 6
         || plan
@@ -145,6 +151,7 @@ fn normalized(text: &str) -> String {
 pub fn fallback(prompt: &str, criteria: Option<&Criteria>) -> Preferences {
     let text = normalized(prompt);
     let mut plan = Preferences {
+        playlist_name: short_name(prompt),
         limit: criteria.map(|c| c.limit).unwrap_or_else(|| {
             text.split_whitespace()
                 .collect::<Vec<_>>()
@@ -235,6 +242,58 @@ pub fn fallback(prompt: &str, criteria: Option<&Criteria>) -> Preferences {
     plan.tag_groups.truncate(6);
     plan.caveats.push("Best-effort ranking, not verified mood, lyrics or dedication suitability. Unmatched intent is approximate; advanced filters remain exact.".into());
     plan
+}
+
+pub fn short_name(prompt: &str) -> String {
+    let words: Vec<String> = prompt
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_owned())
+        .filter(|w| !w.is_empty() && !w.chars().all(|c| c.is_ascii_digit()))
+        .filter(|w| {
+            !matches!(
+                w.to_lowercase().as_str(),
+                "a" | "an"
+                    | "the"
+                    | "to"
+                    | "for"
+                    | "of"
+                    | "and"
+                    | "with"
+                    | "my"
+                    | "me"
+                    | "i"
+                    | "want"
+                    | "some"
+                    | "make"
+                    | "give"
+                    | "please"
+                    | "music"
+                    | "songs"
+                    | "tracks"
+                    | "playlist"
+                    | "kinda"
+                    | "very"
+                    | "more"
+                    | "less"
+                    | "un"
+                    | "una"
+                    | "de"
+                    | "para"
+                    | "con"
+                    | "musica"
+            )
+        })
+        .take(2)
+        .map(|w| {
+            let mut c = w.chars();
+            format!("{}{}", c.next().unwrap().to_uppercase(), c.as_str())
+        })
+        .collect();
+    if words.is_empty() {
+        "Your Mix".into()
+    } else {
+        words.join(" ").chars().take(100).collect()
+    }
 }
 
 pub fn rank(

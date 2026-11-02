@@ -9,6 +9,8 @@ use tower::ServiceExt;
 
 #[derive(Serialize, Deserialize)]
 struct SavedSession {
+    #[serde(default = "provider::random_secret")]
+    device_id: String,
     #[serde(default)]
     auto_sync_pending: bool,
     csrf: String,
@@ -72,7 +74,13 @@ fn load_session(aws: &Aws, sid: &str) -> Result<Option<SavedSession>> {
         return Ok(None);
     };
     let session: SavedSession = serde_json::from_value(decode(&raw)?)?;
-    if now() - session.created >= 86400 {
+    if now() - session.created
+        >= if session.profile.is_some() {
+            crate::config::SESSION_SECONDS
+        } else {
+            86400
+        }
+    {
         return Ok(None);
     };
     if let Some(profile) = &session.profile {
@@ -113,6 +121,7 @@ async fn restore_session(app: &App, sid: &str, saved: SavedSession) {
     app.runtime.lock().unwrap().sessions.insert(
         sid.into(),
         Session {
+            device_id: saved.device_id,
             auto_sync_pending: saved.auto_sync_pending,
             csrf: saved.csrf,
             created: saved.created,
@@ -134,6 +143,7 @@ async fn save_session(app: &App, aws: &Aws, sid: &str, generation: Option<String
         };
         (
             SavedSession {
+                device_id: s.device_id.clone(),
                 auto_sync_pending: s.auto_sync_pending,
                 csrf: s.csrf.clone(),
                 created: s.created,
@@ -157,14 +167,21 @@ async fn save_session(app: &App, aws: &Aws, sid: &str, generation: Option<String
             &account_pk(account.profile.account()),
             &session_pk(sid),
             &json!({"session_pk":session_pk(sid)}),
-            Some(saved.created + 86400),
+            Some(saved.created + crate::config::SESSION_SECONDS),
         )?;
     }
     aws.put(
         &session_pk(sid),
         "session",
         &serde_json::to_value(&saved)?,
-        Some(saved.created + 86400),
+        Some(
+            saved.created
+                + if saved.profile.is_some() {
+                    crate::config::SESSION_SECONDS
+                } else {
+                    86400
+                },
+        ),
     )
 }
 
@@ -322,6 +339,7 @@ pub async fn handle(event: Value) -> Result<Value> {
         format!("{path}?{query}")
     };
     let public = path == "/health"
+        || (path == "/privacy" && method == "GET")
         || path == "/style.css"
         || path == "/app.js"
         || path == "/player.js"
@@ -546,13 +564,7 @@ pub async fn handle(event: Value) -> Result<Value> {
                     Some(acquired.clone()),
                 )?;
                 history::ensure_user(&app.runtime.lock().unwrap().store.db, account)?;
-                history::event(
-                    &app.runtime.lock().unwrap().store.db,
-                    account,
-                    "signed_in",
-                    None,
-                    json!({}),
-                )?;
+                record_login(&mut app.runtime.lock().unwrap(), &id, account, &headers);
                 account_lease = Some(acquired);
             }
             if matches!(path, "/delete-data" | "/disconnect")

@@ -119,7 +119,7 @@ impl Store {
         let raw: Option<String> = self
             .db
             .query_row(
-                "SELECT payload FROM records WHERE account=? AND kind=? AND (kind='snapshot' OR updated>=?)",
+                "SELECT payload FROM records WHERE account=? AND kind=? AND (kind IN ('snapshot','evidence','devices','privacy') OR updated>=?)",
                 params![account, kind, now() - 86400],
                 |r| r.get(0),
             )
@@ -209,7 +209,7 @@ impl Store {
             [(now() / 86400 - 364) * 86400],
         )?;
         self.db.execute(
-            "DELETE FROM records WHERE kind!='snapshot' AND updated < ?",
+            "DELETE FROM records WHERE kind NOT IN ('snapshot','evidence','devices','privacy') AND updated < ?",
             [now() - 86400],
         )?;
         self.db
@@ -310,6 +310,11 @@ mod tests {
             s.put("a", "snapshot", &crate::model::Snapshot::default())
                 .unwrap();
             s.put("a", "preview", &42).unwrap();
+            s.put("a", "evidence", &crate::model::Coverage::default())
+                .unwrap();
+            s.put("a", "devices", &vec!["synthetic"]).unwrap();
+            s.put("a", "privacy", &serde_json::json!({"analytics":false}))
+                .unwrap();
             s.db.execute("UPDATE records SET updated=?", [now() - 86401])
                 .unwrap();
             s.put_tags(
@@ -340,6 +345,9 @@ mod tests {
                 .is_some()
         );
         assert!(s.get::<i32>("a", "preview").unwrap().is_none());
+        for kind in ["evidence", "devices", "privacy"] {
+            assert!(s.get::<serde_json::Value>("a", kind).unwrap().is_some());
+        }
         assert_eq!(s.tags("a").unwrap().len(), 1);
         assert!(s.tags("b").unwrap().is_empty());
         s.disconnect("a").unwrap();

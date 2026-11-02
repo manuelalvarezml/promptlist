@@ -19,6 +19,8 @@ use axum::{
 };
 use maud::{DOCTYPE, Markup, html};
 mod playback;
+mod privacy;
+use privacy::record_login;
 pub mod serverless;
 mod views;
 use serde::Deserialize;
@@ -44,6 +46,7 @@ struct Runtime {
     last_views: HashMap<String, String>,
 }
 struct Session {
+    device_id: String,
     auto_sync_pending: bool,
     csrf: String,
     created: i64,
@@ -56,6 +59,13 @@ struct Session {
 struct Account {
     profile: Profile,
     api: Spotify,
+}
+fn session_lifetime(s: &Session) -> i64 {
+    if s.account.is_some() {
+        crate::config::SESSION_SECONDS
+    } else {
+        86400
+    }
 }
 #[derive(Clone, Default)]
 struct Job {
@@ -74,12 +84,12 @@ fn expire_sessions(rt: &mut Runtime) {
     for session in rt
         .sessions
         .values()
-        .filter(|s| now() - s.created >= 86400 && s.job.running && !s.job.publishing)
+        .filter(|s| now() - s.created >= session_lifetime(s) && s.job.running && !s.job.publishing)
     {
         end_history_job(rt, session, "interrupted", None);
     }
     rt.sessions.retain(|_, s| {
-        let keep = now() - s.created < 86400 || (s.job.running && s.job.publishing);
+        let keep = now() - s.created < session_lifetime(s) || (s.job.running && s.job.publishing);
         if !keep && let Some(abort) = s.job.abort.take() {
             abort.abort();
         }
@@ -159,6 +169,7 @@ pub fn router(app: App) -> Router {
         .route("/publish", post(publish))
         .route("/pause", post(pause))
         .route("/logout", post(disconnect))
+        .route("/privacy", get(privacy::notice).post(privacy::save))
         .route("/disconnect", post(delete_data))
         .route("/delete-data", post(delete_data))
         .layer(DefaultBodyLimit::max(8192))
@@ -258,6 +269,9 @@ fn audit_event(
     run: Option<&str>,
     detail: serde_json::Value,
 ) {
+    if matches!(kind, "view" | "playback_start") && !privacy::analytics_enabled(rt, account) {
+        return;
+    }
     if history::event(&rt.store.db, account, kind, run, detail).is_err() {
         eprintln!("Promptlist: local audit event could not be stored.");
     }
@@ -307,7 +321,7 @@ fn session_id(rt: &Runtime, headers: &HeaderMap) -> Result<String> {
         .filter(|id| {
             rt.sessions
                 .get(id)
-                .is_some_and(|s| now() - s.created < 86400)
+                .is_some_and(|s| now() - s.created < session_lifetime(s))
         })
         .ok_or_else(|| message("Session expired. Open the app and connect again."))
 }
@@ -416,6 +430,7 @@ async fn home(
             rt.sessions.insert(
                 id.clone(),
                 Session {
+                    device_id: provider::random_secret(),
                     auto_sync_pending: false,
                     csrf: provider::random_secret(),
                     created: now(),
@@ -440,6 +455,7 @@ async fn home(
         // No raw URLs or search text; repeated status refreshes are not user navigation.
         let fingerprint = serde_json::json!([
             tab,
+            view.section,
             view.page,
             view.excluded,
             view.q.chars().take(200).collect::<String>()
@@ -451,7 +467,7 @@ async fn home(
                 account.profile.account(),
                 "view",
                 None,
-                serde_json::json!({"tab":tab,"page":view.page,"excluded_only":view.excluded,"search_length":view.q.chars().count().min(200)}),
+                serde_json::json!({"tab":tab,"section":if view.section=="sources" {"sources"} else {"tracks"},"page":view.page,"excluded_only":view.excluded,"search_length":view.q.chars().count().min(200)}),
             );
             rt.last_views.insert(id.clone(), fingerprint);
         }
@@ -557,6 +573,9 @@ async fn home(
         &view,
         preview.as_ref(),
         Capabilities {
+            analytics: account
+                .as_ref()
+                .is_some_and(|a| privacy::analytics_enabled(&rt, a.profile.account())),
             local,
             diagnostics,
             lastfm: app.enrichment.has_lastfm(),
@@ -565,7 +584,7 @@ async fn home(
         },
     );
     let mut response = Html(body.into_string()).into_response();
-    if new_cookie {
+    if new_cookie || account.is_some() {
         response.headers_mut().insert(
             header::SET_COOKIE,
             app.config.session_cookie(&id).parse().unwrap(),
@@ -739,7 +758,7 @@ async fn callback(
                 s.notice = Some("Spotify connected.".into());
                 let account = s.account.as_ref().unwrap().profile.account().to_owned();
                 if history::ensure_user(&rt.store.db, &account).is_ok() {
-                    audit_event(&rt, &account, "signed_in", None, serde_json::json!({}));
+                    record_login(&mut rt, &id, &account, &headers);
                 }
             }
         }
@@ -804,7 +823,7 @@ fn active(rt: &Runtime, id: &str, job: &str) -> bool {
         s.account.is_some()
             && s.job.id == job
             && s.job.running
-            && (now() - s.created < 86400 || s.job.publishing)
+            && (now() - s.created < session_lifetime(s) || s.job.publishing)
     })
 }
 
@@ -1258,6 +1277,10 @@ struct PreviewAction {
     command: String,
     #[serde(default)]
     confirm: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    removed: Option<String>,
 }
 
 fn basic_action(csrf: String) -> Action {
@@ -1576,7 +1599,7 @@ async fn start_build(
             if selection.excluded_unknown>0 {warnings.push(format!("{} tracks lack required evidence.",selection.excluded_unknown));}
             warnings.push(format!("{} matches before the {}-track limit.",selection.total_matches,criteria.limit));
             warnings.push(format!("Evidence lookup completed in {:.1}s.",started.elapsed().as_secs_f64()));
-            let name=if form.name.trim().is_empty() {"Promptlist selection".into()}else{form.name.trim().into()};
+            let name=if form.name.trim().is_empty() {crate::preferences::short_name(&form.prompt)}else{form.name.trim().into()};
             let mut preview=Preview::new(name,selection.tracks.into_iter().map(|t|t.id).collect(),criteria.summary(),warnings,&snapshot)?;
             preview.run_id=Some(job.clone());
             save_preview(&app,&id,&job,&account,&preview)
@@ -1802,7 +1825,11 @@ async fn build_soft_preview(
     }
     summary.extend(controls.summary());
     let name = if form.name.trim().is_empty() {
-        "Promptlist selection".into()
+        if plan.playlist_name.trim().is_empty() {
+            crate::preferences::short_name(&form.prompt)
+        } else {
+            plan.playlist_name.trim().into()
+        }
     } else {
         form.name.trim().into()
     };
@@ -2003,7 +2030,22 @@ async fn edit_preview(
         if preview.id != form.preview_id {
             return Err(message("Preview changed. Reload before editing."));
         }
-        preview.edit(form.index, &form.command)?;
+        if form.command == "remove_many" {
+            let ids: Vec<String> = serde_json::from_str(form.removed.as_deref().unwrap_or("[]"))?;
+            if ids.is_empty()
+                || ids.len() > 100
+                || ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len()
+                || ids.iter().any(|id| !preview.track_ids.contains(id))
+            {
+                return Err(message("Invalid track removals. Reload the selection."));
+            }
+            for id in ids {
+                let index = preview.track_ids.iter().position(|v| v == &id).unwrap();
+                preview.edit(index, "remove")?;
+            }
+        } else {
+            preview.edit(form.index, &form.command)?;
+        }
         rt.store
             .put(account.profile.account(), "preview", &preview)?;
         record_result(&rt, account.profile.account(), &preview)?;
@@ -2014,10 +2056,13 @@ async fn edit_preview(
             preview.run_id.as_deref(),
             serde_json::json!({"command":form.command,"index":form.index,"remaining":preview.track_ids.len()}),
         );
-        Ok::<_, crate::Error>(())
+        Ok::<_, crate::Error>(
+            serde_json::json!({"preview_id":preview.id,"count":preview.track_ids.len()}),
+        )
     })();
     match result {
-        Ok(()) => Redirect::to("/").into_response(),
+        Ok(value) if form.command == "remove_many" => axum::Json(value).into_response(),
+        Ok(_) => Redirect::to("/").into_response(),
         Err(e) => error_response(e),
     }
 }
@@ -2041,6 +2086,11 @@ async fn publish(
             .ok_or_else(|| message("Build a preview first."))?;
         if preview.id != form.preview_id {
             return Err(message("Preview changed. Review it again before saving."));
+        }
+        if preview.phase == Phase::Draft
+            && let Some(name) = form.name
+        {
+            preview.name = name.trim().to_owned();
         }
         let snapshot: Snapshot = rt
             .store
@@ -2374,6 +2424,7 @@ mod tests {
         rt.sessions.insert(
             "fixture".into(),
             Session {
+                device_id: "fixture-device".into(),
                 csrf: "fixture-token".into(),
                 auto_sync_pending: false,
                 created: now(),
@@ -2431,6 +2482,112 @@ mod tests {
                 .to_vec(),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn returning_devices_restore_library_and_extended_sessions() {
+        let (app, _dir, server, _) = seeded_app().await;
+        {
+            let mut rt = app.runtime.lock().unwrap();
+            record_login(&mut rt, "fixture", "fixture", &HeaderMap::new());
+            assert!(!rt.sessions["fixture"].auto_sync_pending);
+            rt.sessions.get_mut("fixture").unwrap().created = now() - 30 * 86400;
+            expire_sessions(&mut rt);
+            assert!(rt.sessions.contains_key("fixture"));
+            assert!(
+                rt.store
+                    .get::<serde_json::Value>("fixture", "devices")
+                    .unwrap()
+                    .is_some()
+            );
+            rt.store.remove("fixture", "snapshot").unwrap();
+            record_login(&mut rt, "fixture", "fixture", &HeaderMap::new());
+            assert!(rt.sessions["fixture"].auto_sync_pending);
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn optional_analytics_default_off_and_can_be_withdrawn() {
+        let (app, _dir, server, _) = seeded_app().await;
+        fixture_html(&app, "/?tab=library", true).await;
+        assert!(!privacy::analytics_enabled(
+            &app.runtime.lock().unwrap(),
+            "fixture"
+        ));
+        fixture_post(&app, "/privacy", "csrf=fixture-token&analytics=yes".into()).await;
+        assert!(privacy::analytics_enabled(
+            &app.runtime.lock().unwrap(),
+            "fixture"
+        ));
+        fixture_post(&app, "/privacy", "csrf=fixture-token".into()).await;
+        assert!(!privacy::analytics_enabled(
+            &app.runtime.lock().unwrap(),
+            "fixture"
+        ));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn batch_removal_is_atomic_rotates_nonce_and_export_uses_edited_name() {
+        let (app, _dir, server, _) = seeded_app().await;
+        fixture_post(&app, "/build", "csrf=fixture-token&prompt=5+tracks".into()).await;
+        idle(&app).await;
+        let old: Preview = app
+            .runtime
+            .lock()
+            .unwrap()
+            .store
+            .get("fixture", "preview")
+            .unwrap()
+            .unwrap();
+        let body = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("csrf", "fixture-token")
+            .append_pair("preview_id", &old.id)
+            .append_pair("command", "remove_many")
+            .append_pair(
+                "removed",
+                &serde_json::to_string(&old.track_ids[..2]).unwrap(),
+            )
+            .finish();
+        let response = fixture_post(&app, "/preview/edit", body.clone()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            fixture_post(&app, "/preview/edit", body).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        let p: Preview = app
+            .runtime
+            .lock()
+            .unwrap()
+            .store
+            .get("fixture", "preview")
+            .unwrap()
+            .unwrap();
+        assert_ne!(old.id, p.id);
+        assert_eq!(p.track_ids, old.track_ids[2..]);
+        assert_eq!(
+            fixture_post(
+                &app,
+                "/publish",
+                format!("csrf=fixture-token&preview_id={}&name=Night+Drive", p.id)
+            )
+            .await
+            .status(),
+            StatusCode::SEE_OTHER
+        );
+        idle(&app).await;
+        let saved: Preview = app
+            .runtime
+            .lock()
+            .unwrap()
+            .store
+            .get("fixture", "preview")
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.name, "Night Drive");
+        assert_eq!(saved.phase, Phase::Saved);
+        server.abort();
     }
 
     #[tokio::test]
@@ -3006,6 +3163,7 @@ mod tests {
     #[tokio::test]
     async fn history_isolation_views_are_deduplicated_and_rendering_escapes_prompts() {
         let (app, _dir, server, _) = seeded_app().await;
+        fixture_post(&app, "/privacy", "csrf=fixture-token&analytics=yes".into()).await;
         fixture_post(
             &app,
             "/build",
@@ -3613,7 +3771,7 @@ mod tests {
                     .sessions
                     .get_mut("fixture")
                     .unwrap()
-                    .created = now() - 86401;
+                    .created = now() - crate::config::SESSION_SECONDS - 1;
                 app.cleanup();
             } else {
                 assert_eq!(
@@ -3911,6 +4069,7 @@ mod tests {
         rt.sessions.insert(
             "session".into(),
             Session {
+                device_id: "test-device".into(),
                 csrf: "right".into(),
                 auto_sync_pending: false,
                 created: now(),
@@ -3943,6 +4102,7 @@ mod tests {
         app.runtime.lock().unwrap().sessions.insert(
             "session".into(),
             Session {
+                device_id: "test-device".into(),
                 csrf: "form-token".into(),
                 auto_sync_pending: false,
                 created: now(),

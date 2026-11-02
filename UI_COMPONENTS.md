@@ -21,19 +21,22 @@ Do not load provider logic or the entire server module for a styling task.
 ## Design Contract
 
 Island Stone theme: supplied painting fills the viewport, unchanged. A graphite
-scrim and mild desaturation start below the clear 104px header (166px on mobile).
+scrim and mild desaturation start below the clear 104px header (96px on mobile).
+One fixed body painting supplies both regions; never paint a separate header image.
 Satoshi Black 900 wordmark, regular/medium/bold body type. Exact sampled bone
 `#ebe5d9`, graphite `#181a19`, moss `#444d48`, water `#2a2c2b`, lichen `#aaa970`,
 limestone `#bfaf8d` and sand `#c9b495`; no cobalt or neon accents.
 Large prompt, track titles, playlist name and refinement text. All text inputs
 are transparent with minimal rules. Sections remain unframed; only real menus
-have opaque surfaces for legibility. The radio sits directly in the header.
+have opaque surfaces for legibility. The radio sits in the desktop header and is
+fixed to the mobile bottom safe area, with no expand mode. Mobile main content
+scrolls inside a fixed shell so the background does not rubber-band.
 No slogans or promotional copy.
 The build view has only compact branding/navigation before the composer/list;
 library totals belong on Library. Completed-success progress is hidden.
 
 Disconnected users see only the wordmark, necessary status and a centered Connect
-Spotify action over the painting. Connected views share one stable tab row with
+Spotify translucent action and a small privacy link over the painting. Connected views share one stable tab row with
 no duplicate page heading. Library owns Tracks/Sources/Excluded subviews and fills
 the remaining desktop height. Textareas cannot be manually resized.
 
@@ -86,7 +89,8 @@ completion. Composer values, focus/caret and scrolling are preserved. OAuth,
 sign-out and deletion retain native form navigation. With JavaScript disabled,
 forms still work and Check progress manually retrieves the current state.
 
-A successful OAuth connection persists a one-shot auto-sync marker. The rendered
+A successful OAuth connection restores the account snapshot first; only accounts
+without a completed snapshot receive a one-shot auto-sync marker. The rendered
 auto-sync form is submitted once using existing CSRF/job transport. The server
 consumes the marker; page refreshes, polling and duplicate requests do not launch
 another completed sync. Jobs retain account locks, durable checkpoints and atomic
@@ -96,6 +100,15 @@ progress when the provider total is unknown. Without JavaScript, use Sync librar
 Never add automatic POST retries, remove CSRF/preview protections, or collect
 keystrokes as part of UI updates. New actions need explicit review before they
 join the transport allowlist.
+
+Mobile resume/BFCache/focus/online events reconcile read-only job state; requests
+have a 20-second response-body deadline. Do not retry writes. Track removal is
+optimistic, coalesced for 100ms, persisted by track ID with rotating preview nonce.
+Conflicting actions/export wait for confirmation; failure restores authoritative
+state or keeps export locked. Background refresh must not overwrite pending edits.
+Preserve internal main scroll and user-edited names across result patches.
+Generate a short playlist name with the existing interpretation (local fallback
+for exact requests); keep its editor directly above Export, not in the composer.
 
 ## Refinement And Player
 

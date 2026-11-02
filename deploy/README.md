@@ -21,7 +21,7 @@ an HTTP health response is not proof of either.
   concurrent writes and duplicate export replay. The worker stays within its
   invocation while background matching runs, flushing progress/session state.
 - Private SSE-S3 bucket, TLS-only access, Block Public Access, scoped IAM.
-  Hosted session tokens are private/encrypted, expire after 24 hours and never
+  Hosted session tokens are private/encrypted, expire up to 90 days after login and never
   enter analytics. Cookies are Secure/HttpOnly, responses private/no-store.
 - No VPC/NAT, EFS, RDS, load balancer, ECR, fixed-price host,
   provisioned concurrency or external analytics service.
@@ -34,7 +34,8 @@ daily action-kind/outcome/count/timing summaries last 365 UTC days. Large record
 use S3 only when useful; normal analytics writes share the existing request.
 No invocation per click, keystroke capture or separate analytics SaaS.
 
-Navigation, submissions, jobs, edits, exports and playback starts are recorded.
+Submissions, jobs, edits, exports and coarse login records support operations.
+Navigation and playback starts require an optional account-wide analytics opt-in.
 SDK pause/seek/volume interactions are not yet instrumented. No library or activity
 data goes to OpenAI. Private developer exports are pseudonymous, not anonymous.
 
@@ -164,10 +165,14 @@ registration/renewal is separate from the light-use AWS budget.
 - Inspect the dedicated failure queue and sanitized project logs after failures.
   An active account lease expires after 45 seconds (HTTP) or 650 seconds (worker).
 - Source edits require rebuild/deploy. Do not rerun import to update production.
-  Successful Spotify connection schedules one incremental background sync;
-  ordinary page loads do not. Resync library explicitly reconciles later changes.
+  Successful Spotify connection restores a completed snapshot when available;
+  only accounts without one schedule first sync. Resync library reconciles later changes.
   Hosted Coverage requests return 404; diagnostic metadata and the local UI switch
   are omitted. Existing snapshots survive unsuccessful syncs.
+- Live legacy evidence envelopes upgrade their old TTL on the next leased account
+  load. Already expired/deleted records cannot be recovered. Device/privacy/evidence
+  records are durable; individual provider freshness still applies. This is a
+  metadata upgrade, not a library import or real-provider analysis.
 - Roll back code by using a previously recorded release key in the private
   receipt, then `configure` and `finalize`. Never overwrite current user data
   from an old local database as part of code rollback.

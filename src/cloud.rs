@@ -9,7 +9,7 @@ use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{Read, Write},
     sync::Arc,
     time::{Duration, SystemTime},
@@ -356,6 +356,7 @@ pub struct Mirror {
     pub lease: Option<Arc<Lease>>,
     rows: BTreeMap<String, Value>,
     objects: BTreeMap<String, String>,
+    retention_updates: BTreeSet<String>,
 }
 
 impl Mirror {
@@ -368,6 +369,7 @@ impl Mirror {
         let pk = format!("account#{}", hash(account));
         let mut rows = BTreeMap::new();
         let mut objects = BTreeMap::new();
+        let mut retention_updates = BTreeSet::new();
         for item in aws.query(&pk, "row#")? {
             if item["expires"]["N"]
                 .as_str()
@@ -385,6 +387,10 @@ impl Mirror {
             }
             let row = aws.payload(&item)?;
             restore(db, &row, account)?;
+            // Upgrade live legacy envelopes without extending provider freshness.
+            if retention_changed(&item, &row) {
+                retention_updates.insert(sk.clone());
+            }
             rows.insert(sk, row);
         }
         Ok(Self {
@@ -393,6 +399,7 @@ impl Mirror {
             lease,
             rows,
             objects,
+            retention_updates,
         })
     }
     pub fn flush(&mut self, db: &rusqlite::Connection) -> Result<()> {
@@ -407,7 +414,7 @@ impl Mirror {
         let current = dump(db)?;
         let changed: Vec<_> = current
             .iter()
-            .filter(|(k, v)| self.rows.get(*k) != Some(*v))
+            .filter(|(k, v)| self.rows.get(*k) != Some(*v) || self.retention_updates.contains(*k))
             .map(|(k, v)| (k.clone(), Some(v.clone())))
             .chain(
                 self.rows
@@ -460,7 +467,10 @@ impl Mirror {
             self.aws
                 .ddb("TransactWriteItems", json!({"TransactItems":writes}))?;
             for (sk, row) in chunk {
-                if let Some(old) = self.objects.remove(sk) {
+                self.retention_updates.remove(sk);
+                if let Some(old) = self.objects.remove(sk)
+                    && uploads.get(sk) != Some(&old)
+                {
                     let _ = self.aws.s3("DELETE", &old, vec![]);
                 }
                 if let Some(path) = uploads.remove(sk) {
@@ -480,6 +490,13 @@ impl Mirror {
     }
 }
 
+fn retention_changed(item: &Value, row: &Value) -> bool {
+    let saved = item["expires"]["N"]
+        .as_str()
+        .and_then(|n| n.parse::<i64>().ok());
+    saved != row_expiry(row)
+}
+
 const TABLES: [(&str, usize); 6] = [
     ("records", 2),
     ("tag_cache", 2),
@@ -491,7 +508,14 @@ const TABLES: [(&str, usize); 6] = [
 fn row_expiry(row: &Value) -> Option<i64> {
     let v = &row["values"];
     match row["table"].as_str()? {
-        "records" if v[1] != "snapshot" => v[3].as_i64().map(|n| n + 86400),
+        "records"
+            if !matches!(
+                v[1].as_str(),
+                Some("snapshot" | "evidence" | "devices" | "privacy")
+            ) =>
+        {
+            v[3].as_i64().map(|n| n + 86400)
+        }
         "tag_cache" => v[3].as_i64(),
         "app_events" => v[2].as_i64().map(|n| n + 90 * 86400),
         "event_daily" => v[1].as_i64().map(|n| n + 365 * 86400),
@@ -651,6 +675,15 @@ mod tests {
     }
     #[test]
     fn cloud_retention_matches_local_policy() {
+        for kind in ["snapshot", "evidence", "devices", "privacy"] {
+            let row = json!({"table":"records","values":["a",kind,"{}",10]});
+            assert_eq!(row_expiry(&row), None);
+            assert!(retention_changed(&json!({"expires":{"N":"86410"}}), &row));
+            assert!(!retention_changed(&json!({}), &row));
+        }
+        let tags = json!({"table":"tag_cache","values":["a","artist","{}",1234]});
+        assert_eq!(row_expiry(&tags), Some(1234));
+        assert!(!retention_changed(&json!({"expires":{"N":"1234"}}), &tags));
         assert_eq!(
             row_expiry(&json!({"table":"records","values":["a","snapshot","{}",10]})),
             None
