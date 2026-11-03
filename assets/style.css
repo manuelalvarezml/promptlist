@@ -11,7 +11,7 @@
   --moss: #444d48;
   --lichen: #aaa970;
   --player-glass: rgb(42 44 43 / 82%);
-  --mobile-player-height: 68px;
+  --mobile-player-height: 60px;
   --paper: var(--graphite);
   --panel: #2a2c2b;
   --input: transparent;
@@ -478,11 +478,19 @@ body:has(.privacy-notice) { height:auto; overflow:auto; }
   body > header { flex-shrink:0; position:relative; grid-template-columns: minmax(0,1fr) auto; grid-template-rows: 1fr; padding: 10px 20px; gap: 6px 12px; }
   main[data-view] { flex:1; min-height:0; overflow:auto; padding-bottom:20px; overscroll-behavior:contain; }
   body > footer { flex-shrink:0; }
-  body:has(.radio-player:not([hidden])) > footer { padding-bottom:calc(var(--mobile-player-height) + env(safe-area-inset-bottom)); }
+  body:has(.radio-player) > footer { position:relative; height:0; min-height:0; padding:0; border:0; gap:0; }
+  body:has(.radio-player:not([hidden])) > footer { height:calc(var(--mobile-player-height) + env(safe-area-inset-bottom)); }
+  body:has(.radio-player) > footer > .ui-mode { position:absolute; left:16px; bottom:8px; z-index:31; }
+  body:has(.radio-player:not([hidden])) > footer > .ui-mode { bottom:calc(var(--mobile-player-height) + env(safe-area-inset-bottom) + 8px); }
   body:has(.radio-player) > footer > :not(.ui-mode) { display:none; }
   .brand-cluster { grid-column: 1; }
   .account { grid-column: 2; grid-row: 1; }
-  .radio-player { position:fixed; left:0; right:0; bottom:0; z-index:30; width:100%; max-width:none; padding:3px 12px calc(4px + env(safe-area-inset-bottom)); border:0; border-top:1px solid var(--line-dark); border-radius:0; }
+  .radio-player { position:fixed; left:0; right:0; bottom:0; z-index:30; width:100%; max-width:none; padding:2px 12px calc(3px + env(safe-area-inset-bottom)); border:0; border-top:1px solid var(--line-dark); border-radius:0; }
+  .radio-main { height:36px; }
+  .radio-tuning { height:18px; }
+  .radio-player .icon-button { width:36px; min-height:36px; }
+  .player-metadata strong { line-height:1.1; }
+  #player-artist { line-height:1.2; }
   .header-status { font-size: 10px; max-height: 48px; }
   .account-popover { top: 64px; }
 }

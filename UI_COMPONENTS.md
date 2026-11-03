@@ -36,8 +36,11 @@ The player is initially hidden, including its bottom spacer. Reveal only after
 SDK state confirms a playing track; preserve it while paused and during SPA
 navigation. Preparation/failure alone must not reveal it. Track Play remains
 available to retry a failed SDK connection while the radio is hidden.
-Radio uses sampled water at82% opacity with18px backdrop blur, bone text and a68px mobile height
-plus safe-area inset (desktop66px). Keep tap controls40px despite the compact frame.
+Radio uses sampled water at82% opacity with18px backdrop blur, bone text and a60px mobile height
+plus safe-area inset (desktop66px). Mobile controls are36px, desktop40px.
+The connected mobile footer has zero height, padding and border before playback;
+once playing it reserves exactly the radio height, never additional footer padding.
+The local-only display toggle floats and must not allocate a bottom strip.
 Suggestions use native vertical scroll chaining to main at either boundary;
 only the outer workspace contains overscroll. Never trap a swipe inside the queue.
 Export uses lichen with graphite text and the existing Lucide arrow, distinct

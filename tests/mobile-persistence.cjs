@@ -28,6 +28,10 @@ const assert=require('node:assert/strict');
       } else await viewportPage.locator('#radio-player[data-fixture-connections="1"]').waitFor({state:'attached'});
       assert.equal(await viewportPage.locator('#radio-player').isVisible(),false);
       const idleFooter=await viewportPage.locator('body > footer').evaluate(el=>el.getBoundingClientRect().height);
+      if(width<1024) {
+        assert.equal(idleFooter,0,'idle footer must occupy no space');
+        assert.equal(await viewportPage.locator('main').evaluate(el=>el.getBoundingClientRect().bottom),850,'idle workspace must reach viewport bottom');
+      }
       await viewportPage.screenshot({path:`/tmp/promptlist-player-idle-${width}.png`});
       if(width===390) {
         await viewportPage.route('**/api/playback/play',route=>route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'Synthetic playback failure'})}));
@@ -66,9 +70,10 @@ const assert=require('node:assert/strict');
       assert.equal(metrics.exportColor,'rgb(170, 169, 112)');
       if(width<1024) {
         assert.equal(metrics.playerPosition,'fixed');assert(metrics.playerBottom<=851 && metrics.playerBottom>=849);
-        assert(metrics.playerHeight<=70,'mobile player must stay compact');
+        assert.equal(metrics.playerHeight,60,'mobile player must occupy only 60px');
         const playingFooter=await viewportPage.locator('body > footer').evaluate(el=>el.getBoundingClientRect().height);
-        assert(playingFooter-idleFooter>=48,'reserve player space only after playback');
+        assert.equal(playingFooter,metrics.playerHeight,'footer reserves exactly the player height, no extra strip');
+        assert.equal(await viewportPage.locator('main').evaluate(el=>el.getBoundingClientRect().bottom),850-metrics.playerHeight);
       }
       assert.equal(await viewportPage.locator('body > header').count(),1);
       if(width>=1024) {
