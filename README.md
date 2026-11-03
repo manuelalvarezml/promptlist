@@ -12,6 +12,9 @@ Refine a selection conversationally with the second prompt field. Each turn
 retains previous preferences and creates a linked history entry. Simple count
 reductions preserve the current order without another lookup. Play buttons
 start the account-linked Spotify player in the desktop header or mobile bottom bar.
+The compact frosted player stays hidden until playback starts, remains available
+while paused, and does not reserve empty mobile space beforehand. Suggestions
+hand scrolling back to the workspace at either end; Export has a lichen accent.
 Track removals appear immediately and persist in short batches; export waits for
 confirmation. Generated names prefer two words and are editable above Export.
 

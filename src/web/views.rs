@@ -97,7 +97,7 @@ pub(super) fn composer(s: &Session, snapshot: &Snapshot, preview: Option<&Previe
                     } @else {
                         form.save-form method="post" action="/publish" {(hidden(&s.csrf)) input type="hidden" name="preview_id" value=(p.id);
                             label.field.playlist-name {"Playlist name" input name="name" maxlength="100" value=(p.name) readonly[p.phase!=Phase::Draft];}
-                            button.primary disabled[s.job.running||p.track_ids.is_empty()] {(if p.phase==Phase::Created {"Resume export"} else {"Export to Spotify"})}
+                            button.primary.export-button disabled[s.job.running||p.track_ids.is_empty()] {(if p.phase==Phase::Created {"Resume export"} else {"Export to Spotify"}) (ui::icon("arrow-up"))}
                         }
                     }
                     @if !s.job.running && matches!(p.phase,Phase::Creating|Phase::Created) {

@@ -10,6 +10,8 @@
   --graphite: #181a19;
   --moss: #444d48;
   --lichen: #aaa970;
+  --player-glass: rgb(42 44 43 / 82%);
+  --mobile-player-height: 68px;
   --paper: var(--graphite);
   --panel: #2a2c2b;
   --input: transparent;
@@ -135,6 +137,7 @@ body > header {
   border-top: 0;
   border-bottom: 1px solid var(--line-dark);
 }
+body > header > .account { grid-column: -2; }
 .brand { display: flex; align-items: baseline; min-width: 0; }
 .brand:hover { text-decoration: none; }
 .brand.wordmark { color: var(--graphite); font-size: 32px; font-weight: 900; line-height: 1; overflow-wrap: anywhere; flex-shrink: 0; }
@@ -251,20 +254,21 @@ textarea.floating-prompt:focus-visible, .refinement-form textarea:focus-visible 
 .refinement-form button { justify-self: start; }
 .conversation { margin: 0 0 22px; padding: 0; list-style: none; max-height: 180px; overflow: auto; }
 .conversation li { margin: 0 0 14px; padding-left: 14px; border-left: 2px solid var(--accent); font-size: 20px; overflow-wrap: anywhere; }
-.radio-player { min-width: 0; color: var(--graphite); width: 100%; }
-.radio-main { display: flex; align-items: center; gap: 12px; min-width: 0; height: 44px; }
-.player-art { width: 40px; height: 40px; flex: 0 0 40px; object-fit: cover; }
+.radio-player { min-width: 0; color: var(--bone); width: 100%; padding:2px 12px; border:1px solid var(--line); border-radius:4px; background:var(--player-glass); -webkit-backdrop-filter:blur(18px); backdrop-filter:blur(18px); }
+.radio-player :focus-visible { outline-color:var(--bone); }
+.radio-main { display: flex; align-items: center; gap: 8px; min-width: 0; height: 40px; }
+.player-art { width: 32px; height: 32px; flex: 0 0 32px; object-fit: cover; }
 .player-metadata { flex: 1; min-width: 0; }
 .player-metadata strong, #player-artist { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .player-metadata strong { font-size: 18px; line-height: 1.25; }
 #player-artist { font-size: 12px; line-height: 1.4; }
 .player-controls { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-.radio-player .icon-button { width: 32px; color: var(--graphite); }
-.radio-player .icon-button img { filter: none; }
-.radio-player .icon-button:hover { background: rgb(235 229 217 / 35%); }
-.radio-tuning { display: grid; grid-template-columns: 32px minmax(40px,1fr) 32px 92px; align-items: center; gap: 8px; height: 26px; }
+.radio-player .icon-button { width: 40px; min-height:40px; color: var(--bone); }
+.radio-player .icon-button img, .player-volume img { filter:invert(1); }
+.radio-player .icon-button:hover { background: rgb(235 229 217 / 15%); }
+.radio-tuning { display: grid; grid-template-columns: 28px minmax(40px,1fr) 28px 80px; align-items: center; gap: 6px; height: 20px; }
 .player-time { font-size: 10px; font-variant-numeric: tabular-nums; }
-#radio-player input[type="range"] { width: 100%; min-width: 0; min-height: 20px; height: 20px; padding: 0; margin: 0; border: 0; box-shadow: none; background: transparent; accent-color: var(--graphite); cursor: pointer; }
+#radio-player input[type="range"] { width: 100%; min-width: 0; min-height: 20px; height: 20px; padding: 0; margin: 0; border: 0; box-shadow: none; background: transparent; accent-color: var(--bone); cursor: pointer; }
 .player-volume { display: flex; align-items: center; gap: 6px; }
 .player-volume img { width: 14px; height: 14px; flex-shrink: 0; }
 .advanced-config { border: 0; }
@@ -309,6 +313,9 @@ details.criteria-summary > ul { margin: 0 0 14px; padding-left: 20px; }
 .save-form > label:not(.consent) { display: grid; gap: 8px; font-size: 11px; color: var(--muted); }
 .save-form .consent { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
 .save-form > button { justify-self: start; }
+button.primary.export-button { background:var(--lichen); border-color:var(--lichen); color:var(--graphite); justify-content:space-between; padding:12px 18px; font-size:18px; font-weight:700; box-shadow:inset 0 1px 0 rgb(235 229 217 / 30%); }
+button.primary.export-button:hover:not(:disabled) { background:var(--bone); border-color:var(--bone); }
+.export-button img { width:20px; height:20px; filter:none; transform:rotate(45deg); }
 .result-empty { display: flex; min-height: 240px; flex-direction: column; align-items: flex-start; justify-content: center; gap: 10px; padding: 32px 0; color: var(--muted); }
 .result-empty h2, .result-empty h3 { color: var(--ink); font-size: 22px; font-weight: 450; max-width: 18ch; margin-bottom: 8px; }
 .result-empty { align-items: center; text-align: center; }
@@ -364,6 +371,7 @@ body > footer { display: flex; justify-content: space-between; flex-wrap: wrap; 
 
 /* Shared ScrollRegion and JobStatus components. */
 .scroll-region { max-height: min(52dvh,480px); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding-right: 8px; scrollbar-color: var(--line-dark) transparent; scrollbar-width: thin; }
+.preview > .scroll-region { overscroll-behavior-y:auto; }
 .scroll-region:focus-visible { outline-offset: 2px; }
 .history-result .scroll-region { max-height: 320px; }
 .job { background: transparent; border-left: 0; border-bottom: 1px solid var(--line); padding: 16px 0; }
@@ -470,11 +478,11 @@ body:has(.privacy-notice) { height:auto; overflow:auto; }
   body > header { flex-shrink:0; position:relative; grid-template-columns: minmax(0,1fr) auto; grid-template-rows: 1fr; padding: 10px 20px; gap: 6px 12px; }
   main[data-view] { flex:1; min-height:0; overflow:auto; padding-bottom:20px; overscroll-behavior:contain; }
   body > footer { flex-shrink:0; }
-  body:has(.radio-player) > footer { padding-bottom:calc(116px + env(safe-area-inset-bottom)); }
+  body:has(.radio-player:not([hidden])) > footer { padding-bottom:calc(var(--mobile-player-height) + env(safe-area-inset-bottom)); }
   body:has(.radio-player) > footer > :not(.ui-mode) { display:none; }
   .brand-cluster { grid-column: 1; }
   .account { grid-column: 2; grid-row: 1; }
-  .radio-player { position:fixed; left:0; right:0; bottom:0; z-index:30; width:100%; max-width:none; padding:12px 16px calc(8px + env(safe-area-inset-bottom)); background:var(--bone); color:var(--graphite); border-top:1px solid var(--line-dark); }
+  .radio-player { position:fixed; left:0; right:0; bottom:0; z-index:30; width:100%; max-width:none; padding:3px 12px calc(4px + env(safe-area-inset-bottom)); border:0; border-top:1px solid var(--line-dark); border-radius:0; }
   .header-status { font-size: 10px; max-height: 48px; }
   .account-popover { top: 64px; }
 }

@@ -17,6 +17,7 @@ Do not load provider logic or the entire server module for a styling task.
 | `src/refinement.rs` | Prompt-only conversational state, bounded context and local refinement fallback |
 | `tests/browser-acceptance.cjs` | Synthetic workflow and responsive regression checks |
 | `tests/flow-acceptance.cjs` | Connection gate, merged Library, local/web mode and auto-sync transport checks |
+| `tests/mobile-persistence.cjs` | Player visibility/glass/size, native wheel/touch scroll handoff and persistence checks |
 
 ## Design Contract
 
@@ -31,6 +32,16 @@ are transparent with minimal rules. Sections remain unframed; only real menus
 have opaque surfaces for legibility. The radio sits in the desktop header and is
 fixed to the mobile bottom safe area, with no expand mode. Mobile main content
 scrolls inside a fixed shell so the background does not rubber-band.
+The player is initially hidden, including its bottom spacer. Reveal only after
+SDK state confirms a playing track; preserve it while paused and during SPA
+navigation. Preparation/failure alone must not reveal it. Track Play remains
+available to retry a failed SDK connection while the radio is hidden.
+Radio uses sampled water at82% opacity with18px backdrop blur, bone text and a68px mobile height
+plus safe-area inset (desktop66px). Keep tap controls40px despite the compact frame.
+Suggestions use native vertical scroll chaining to main at either boundary;
+only the outer workspace contains overscroll. Never trap a swipe inside the queue.
+Export uses lichen with graphite text and the existing Lucide arrow, distinct
+from bone Build/Refine actions. Keep this accent scoped to the export command.
 No slogans or promotional copy.
 The build view has only compact branding/navigation before the composer/list;
 library totals belong on Library. Completed-success progress is hidden.

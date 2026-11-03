@@ -52,7 +52,7 @@ pub fn preview_button(id: &str, name: &str) -> Markup {
 }
 
 pub fn player(connected: bool) -> Markup {
-    html! {section.radio-player id="radio-player" data-connected=(connected.to_string()) aria-label="Spotify player" {
+    html! {section.radio-player id="radio-player" data-connected=(connected.to_string()) aria-label="Spotify player" hidden {
         div.radio-main {
             img.player-art id="player-art" alt="" width="40" height="40" hidden;
             div.player-metadata {a id="player-link" target="_blank" rel="noreferrer" {strong id="player-title" {"Nothing playing"}} span id="player-artist" {"Spotify"}}

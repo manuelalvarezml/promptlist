@@ -5,6 +5,7 @@
   let player, device, sdkLoading, connecting, resolveReady, rejectReady, readyTimer;
   let state = null, observedAt = 0, busy = false, seeking = false, disposed = false;
   let queueButtons = [], queuePreview;
+  let hasPlayed = false;
   const hardwareVolume = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const connected = () => el('radio-player')?.dataset.connected === 'true';
@@ -50,11 +51,13 @@
     el('player-toggle').setAttribute('aria-label', paused ? 'Play' : 'Pause');
     el('player-toggle').title = paused ? 'Play' : 'Pause';
     el('player-toggle').querySelector('img').src = paused ? '/icons/play' : '/icons/pause';
-    queue.forEach(button => { button.disabled = !device || busy; });
+    queue.forEach(button => { button.disabled = !connected() || busy || (!!connecting && !device); });
   }
   function showState(next) {
     state = next; observedAt = performance.now();
     const track = next?.track_window?.current_track;
+    if (track && !next.paused) hasPlayed = true;
+    el('radio-player').hidden = !hasPlayed;
     if (track) {
       el('player-title').textContent = track.name || 'Unknown track';
       el('player-artist').textContent = (track.artists || []).map(a => a.name).join(', ');
@@ -118,7 +121,7 @@
         });
         player.addListener('not_ready', () => failed('Player disconnected. Press Play to reconnect.'));
         player.addListener('player_state_changed', next => { if (!disposed) showState(next); });
-        player.addListener('autoplay_failed', () => status('Your browser blocked playback. Press Play in the header to resume.'));
+        player.addListener('autoplay_failed', () => status('Your browser blocked playback. Press the song\'s Play button to retry.'));
         player.addListener('initialization_error', () => failed('Protected audio is unavailable in this browser. Open Promptlist in Chrome or another supported browser.'));
         player.addListener('authentication_error', () => failed('Reconnect Spotify to grant playback permissions.'));
         player.addListener('account_error', () => failed('Spotify Premium is required for this player.'));
